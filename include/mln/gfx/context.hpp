@@ -114,6 +114,9 @@ public:
     /// Sets dirty state
     virtual void setDirtyState() = 0;
 
+    /// Drops the meshes and drawables kept for the globe's tile clipping masks; a Mercator frame calls it.
+    virtual void releaseGlobeClipMasks() = 0;
+
     /// Create a new vertex attribute array
     virtual gfx::VertexAttributeArrayPtr createVertexAttributeArray() const = 0;
 
@@ -134,7 +137,7 @@ public:
     /// Get the generic shader with the specified name
     virtual gfx::ShaderProgramBasePtr getGenericShader(gfx::ShaderRegistry&,
                                                        const std::string& name,
-                                                       ProjectionVariant = ProjectionVariant::Mercator) = 0;
+                                                       ProjectionVariant) = 0;
 
     /// Create a tile layer group implementation
     virtual TileLayerGroupPtr createTileLayerGroup(int32_t layerIndex,

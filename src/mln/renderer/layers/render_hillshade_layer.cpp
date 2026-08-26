@@ -161,6 +161,9 @@ void RenderHillshadeLayer::update(gfx::ShaderRegistry& shaders,
                                   UniqueChangeRequestVec& changes) {
     if (updateProjectionVariant(state)) {
         hillshadeShader.reset();
+        if (projectionVariant == gfx::ProjectionVariant::Mercator) {
+            globeMeshes.clear();
+        }
     }
     if (!renderTiles || renderTiles->empty()) {
         removeAllDrawables();
@@ -184,7 +187,8 @@ void RenderHillshadeLayer::update(gfx::ShaderRegistry& shaders,
     }
 
     if (!hillshadePrepareShader) {
-        hillshadePrepareShader = context.getGenericShader(shaders, HillshadePrepareShaderGroupName);
+        hillshadePrepareShader = context.getGenericShader(
+            shaders, HillshadePrepareShaderGroupName, gfx::ProjectionVariant::Mercator);
     }
 
     if (!hillshadeShader) {

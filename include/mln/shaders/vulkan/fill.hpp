@@ -77,7 +77,7 @@ void main() {
     frag_opacity = unpack_mix_float(in_opacity, drawable.opacity_t);
 #endif
 
-    gl_Position = projectTile(in_position, projectionVector.projection_ubo[constant.ubo_index]);
+    gl_Position = projectTile(vec2(in_position), vec2(in_position), projectionVector.projection_ubo[constant.ubo_index]);
     applySurfaceTransform();
 }
 )";
@@ -187,7 +187,7 @@ void main() {
     frag_opacity = unpack_mix_float(in_opacity, drawable.opacity_t);
 #endif
 
-    gl_Position = projectTile(in_position, projectionVector.projection_ubo[constant.ubo_index]);
+    gl_Position = projectTile(vec2(in_position), vec2(in_position), projectionVector.projection_ubo[constant.ubo_index]);
     applySurfaceTransform();
 
     frag_position = (gl_Position.xy / gl_Position.w + 1.0) / 2.0 * paintParams.world_size;
@@ -379,7 +379,7 @@ void main() {
     frag_pos_a = get_pattern_pos(drawable.pixel_coord_upper, drawable.pixel_coord_lower, fromScale * display_size_a, tileZoomRatio, in_position),
     frag_pos_b = get_pattern_pos(drawable.pixel_coord_upper, drawable.pixel_coord_lower, toScale * display_size_b, tileZoomRatio, in_position),
 
-    gl_Position = projectTile(in_position, projectionVector.projection_ubo[constant.ubo_index]);
+    gl_Position = projectTile(vec2(in_position), vec2(in_position), projectionVector.projection_ubo[constant.ubo_index]);
     applySurfaceTransform();
 }
 )";
@@ -629,7 +629,7 @@ void main() {
     const vec2 display_size_b = vec2((pattern_br_b.x - pattern_tl_b.x) / pixelRatio, (pattern_br_b.y - pattern_tl_b.y) / pixelRatio);
 
     const vec2 position2 = in_position.xy;
-    gl_Position = projectTile(in_position, projectionVector.projection_ubo[constant.ubo_index]);
+    gl_Position = projectTile(vec2(in_position), vec2(in_position), projectionVector.projection_ubo[constant.ubo_index]);
     applySurfaceTransform();
 
     frag_pos_a = get_pattern_pos(drawable.pixel_coord_upper, drawable.pixel_coord_lower, fromScale * display_size_a, tileZoomRatio, position2),
@@ -819,8 +819,8 @@ void main() {
     // of this vertex.
     mediump vec2 dist = outset * a_extrude * LINE_NORMAL_SCALE;
 
-    vec4 projected_extrude = drawable.matrix * vec4(dist / drawable.ratio, 0.0, 0.0);
-    gl_Position = projectTile(pos, projectionVector.projection_ubo[constant.ubo_index]) + projected_extrude;
+    vec4 projected_extrude = projectionVector.projection_ubo[constant.ubo_index].fallback_matrix * vec4(dist / drawable.ratio, 0.0, 0.0);
+    gl_Position = projectTile(pos, pos, projectionVector.projection_ubo[constant.ubo_index]) + projected_extrude;
     applySurfaceTransform();
 
     // calculate how much the perspective view squishes or stretches the extrude

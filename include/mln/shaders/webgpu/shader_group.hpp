@@ -47,8 +47,8 @@ public:
 
     gfx::ShaderPtr getOrCreateShader(gfx::Context& gfxContext,
                                      const StringIDSetsPair& propertiesAsUniforms,
-                                     std::string_view /*firstAttribName*/,
-                                     gfx::ProjectionVariant variant) override {
+                                     gfx::ProjectionVariant variant,
+                                     std::string_view /*firstAttribName*/) override {
         using ShaderSource = shaders::ShaderSource<ShaderID, gfx::Backend::Type::WebGPU>;
         constexpr auto& name = ShaderSource::name;
         constexpr auto& vert = ShaderSource::vertex;
@@ -68,15 +68,17 @@ public:
                 additionalDefines.emplace(globeDefine, std::string());
             }
 
-            std::string vertexSource;
-            std::string fragmentSource;
+            // The common prelude goes through the preprocessor with the shader, so its `#ifdef`s see the defines.
+            using CommonPrelude = shaders::ShaderSource<shaders::BuiltIn::Prelude, gfx::Backend::Type::WebGPU>;
+            std::string vertexSource = std::string(CommonPrelude::prelude) + "\n";
+            std::string fragmentSource = vertexSource;
 
             if constexpr (requires { ShaderSource::prelude; }) {
-                vertexSource = std::string(ShaderSource::prelude) + vert;
-                fragmentSource = std::string(ShaderSource::prelude) + frag;
+                vertexSource += std::string(ShaderSource::prelude) + vert;
+                fragmentSource += std::string(ShaderSource::prelude) + frag;
             } else {
-                vertexSource = vert;
-                fragmentSource = frag;
+                vertexSource += vert;
+                fragmentSource += frag;
             }
 
             std::unordered_map<std::string, bool> defineSet;
