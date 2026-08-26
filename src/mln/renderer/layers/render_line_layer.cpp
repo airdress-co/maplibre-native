@@ -325,6 +325,7 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                              [[maybe_unused]] const PaintParameters& paintParameters,
                              const RenderTree& renderTree,
                              UniqueChangeRequestVec& changes) {
+    updateProjectionVariant(state);
     stats.renderedFeatures.clear();
 
     if (!renderTiles || renderTiles->empty()) {
@@ -527,7 +528,8 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                 }
             }
 
-            auto shader = lineSDFShaderGroup->getOrCreateShader(context, propertiesAsUniforms, posNormalAttribName);
+            auto shader = lineSDFShaderGroup->getOrCreateShader(
+                context, propertiesAsUniforms, posNormalAttribName, projectionVariant);
             if (!shader) {
                 continue;
             }
@@ -551,7 +553,8 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                 }
             }
 
-            auto shader = linePatternShaderGroup->getOrCreateShader(context, propertiesAsUniforms, posNormalAttribName);
+            auto shader = linePatternShaderGroup->getOrCreateShader(
+                context, propertiesAsUniforms, posNormalAttribName, projectionVariant);
             if (!shader) {
                 continue;
             }
@@ -592,7 +595,7 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
             }
 
             auto shader = lineGradientShaderGroup->getOrCreateShader(
-                context, propertiesAsUniforms, posNormalAttribName);
+                context, propertiesAsUniforms, posNormalAttribName, projectionVariant);
             if (!shader) {
                 continue;
             }
@@ -622,7 +625,8 @@ void RenderLineLayer::update(gfx::ShaderRegistry& shaders,
                 }
             }
 
-            auto shader = lineShaderGroup->getOrCreateShader(context, propertiesAsUniforms, posNormalAttribName);
+            auto shader = lineShaderGroup->getOrCreateShader(
+                context, propertiesAsUniforms, posNormalAttribName, projectionVariant);
             if (!shader) {
                 continue;
             }

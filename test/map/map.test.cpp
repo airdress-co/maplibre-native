@@ -33,6 +33,7 @@
 #include <mln/style/layers/location_indicator_layer.hpp>
 #include <mln/style/layers/raster_layer.hpp>
 #include <mln/style/layers/symbol_layer.hpp>
+#include <mln/style/projection.hpp>
 #include <mln/style/sources/custom_geometry_source.hpp>
 #include <mln/style/sources/geojson_source.hpp>
 #include <mln/style/sources/image_source.hpp>
@@ -2080,6 +2081,55 @@ TEST(BackgroundLayer, StyleUpdateZoomDependency) {
                      test.frontend.render(test.map).image,
                      0.0006,
                      0.1);
+}
+
+TEST(Map, GlobeHandOffKeepsTiles) {
+    // Crossing the globe's Mercator hand-off must not re-parse the tiles already on screen.
+    util::RunLoop runLoop;
+    std::mutex tileMutex;
+    std::vector<OverscaledTileID> parsed;
+    StubMapObserver observer;
+    observer.onTileActionCallback = [&](TileOperation op, const OverscaledTileID& id, const std::string& sourceID) {
+        if (sourceID != "mapbox" || op != TileOperation::StartParse) return;
+        std::scoped_lock lock(tileMutex);
+        parsed.push_back(id);
+    };
+
+    HeadlessFrontend frontend{{512, 512}, 1};
+    MapAdapter map(
+        frontend,
+        observer,
+        std::make_shared<MainResourceLoader>(
+            ResourceOptions().withCachePath(":memory:").withAssetPath("test/fixtures/api/assets"), ClientOptions()),
+        MapOptions().withMapMode(MapMode::Static).withSize(frontend.getSize()));
+
+    map.getStyle().loadJSON(util::read_file("test/fixtures/api/water.json"));
+    map.getStyle().getProjection()->setType(ProjectionDefinition("globe"));
+    const LatLng center{37.8, -122.5}; // the fixture has tile 10/163/395
+    map.jumpTo(CameraOptions().withCenter(center).withZoom(10.5));
+    (void)frontend.render(map);
+    ASSERT_TRUE(map.getTransformState().isGlobeRendering());
+    std::vector<OverscaledTileID> firstVisit;
+    {
+        std::scoped_lock lock(tileMutex);
+        firstVisit.swap(parsed);
+    }
+    ASSERT_FALSE(firstVisit.empty());
+
+    // Zoom 12.5 is Mercator. The zoom-10 tiles stay on screen while their children load; they must not be parsed
+    // again.
+    map.jumpTo(CameraOptions().withCenter(center).withZoom(12.5));
+    (void)frontend.render(map);
+    ASSERT_FALSE(map.getTransformState().isGlobeRendering());
+    std::scoped_lock lock(tileMutex);
+    std::vector<OverscaledTileID> reparsed;
+    for (const auto& id : parsed) {
+        if (std::find(firstVisit.begin(), firstVisit.end(), id) != firstVisit.end()) {
+            reparsed.push_back(id);
+        }
+    }
+    EXPECT_TRUE(reparsed.empty()) << reparsed.size() << " of " << firstVisit.size()
+                                  << " tiles were parsed again after the hand-off";
 }
 
 TEST(Map, LineLayerDepthDistribution) {

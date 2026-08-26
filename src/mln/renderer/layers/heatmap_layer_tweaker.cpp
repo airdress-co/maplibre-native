@@ -1,3 +1,5 @@
+#include <cmath>
+#include <mln/util/constants.hpp>
 #include <mln/renderer/layers/heatmap_layer_tweaker.hpp>
 
 #include <mln/gfx/context.hpp>
@@ -69,7 +71,7 @@ void HeatmapLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
         constexpr bool inViewportPixelUnits = false;
         const auto projection = getProjectionData(
             tileID, parameters, {0.f, 0.f}, TranslateAnchorType::Viewport, nearClipped, inViewportPixelUnits, drawable);
-        const auto& matrix = projection.mainMatrix;
+        const auto& matrix = projection.fallbackMatrix;
 #if MLN_UBO_CONSOLIDATION
         projectionUBOVector[i] = toProjectionUBO(projection);
 #else
@@ -87,7 +89,11 @@ void HeatmapLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
 
             .weight_t = std::get<0>(binders->get<HeatmapWeight>()->interpolationFactor(zoom)),
             .radius_t = std::get<0>(binders->get<HeatmapRadius>()->interpolationFactor(zoom)),
-            .pad1 = 0
+            .globe_extrude_scale = static_cast<float>(
+                tileID.pixelsToTileUnits(1.0f, zoom) /
+                (util::EXTENT * static_cast<double>(1ull << tileID.canonical.z)) * util::M2PI *
+                (parameters.state.isGlobeRendering() ? std::cos(util::deg2rad(parameters.state.getLatLng().latitude()))
+                                                     : 1.0))
         };
 #if MLN_UBO_CONSOLIDATION
         drawable.setUBOIndex(i++);

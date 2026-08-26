@@ -451,6 +451,11 @@ enum {
 };
 
 enum {
+    idGlobeDepthPosVertexAttribute,
+    globeDepthVertexAttributeCount
+};
+
+enum {
     idHeatmapPosVertexAttribute,
 
     // Data driven
@@ -561,6 +566,7 @@ static constexpr uint32_t maxAttributeCountPerShader = std::max({
     static_cast<uint32_t>(debugVertexAttributeCount),
     static_cast<uint32_t>(fillVertexAttributeCount),
     static_cast<uint32_t>(fillExtrusionVertexAttributeCount),
+    static_cast<uint32_t>(globeDepthVertexAttributeCount),
     static_cast<uint32_t>(heatmapVertexAttributeCount),
     static_cast<uint32_t>(hillshadeVertexAttributeCount),
     static_cast<uint32_t>(colorReliefVertexAttributeCount),

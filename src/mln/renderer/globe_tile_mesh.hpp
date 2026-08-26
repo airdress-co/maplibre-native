@@ -11,13 +11,15 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 namespace mln {
 
 /// The pole-capped globe grid for a tile, as position + texture-position vertices; texture positions stay inside
-/// the tile so the pole rows sample the tile's edge. `layoutVertex(Point<int16_t>, Point<uint16_t>)` is the bucket's.
+/// the tile so the pole rows sample the tile's edge.
 template <typename Vertex, typename LayoutVertexFn>
 struct GlobeTileMesh {
     std::shared_ptr<gfx::VertexVector<Vertex>> vertices;
@@ -45,6 +47,23 @@ struct GlobeTileMesh {
     }
 };
 
+/// The grids a layer has built so far, one per zoom and pole row: the mesh depends on nothing else.
+template <typename Vertex, typename LayoutVertexFn>
+class GlobeTileMeshCache {
+public:
+    const GlobeTileMesh<Vertex, LayoutVertexFn>& get(const CanonicalTileID& canonical, LayoutVertexFn layoutVertex) {
+        const auto key = std::make_tuple(canonical.z, canonical.y == 0, canonical.y == (1u << canonical.z) - 1);
+        auto it = meshes.find(key);
+        if (it == meshes.end()) {
+            it = meshes.emplace(key, GlobeTileMesh<Vertex, LayoutVertexFn>(canonical, layoutVertex)).first;
+        }
+        return it->second;
+    }
+
+private:
+    std::map<std::tuple<uint8_t, bool, bool>, GlobeTileMesh<Vertex, LayoutVertexFn>> meshes;
+};
+
 /// The same grid as raw `Short2` positions, for drawables built from raw vertex bytes.
 struct RawGlobeTileMesh {
     std::vector<std::uint8_t> vertices;
@@ -53,9 +72,12 @@ struct RawGlobeTileMesh {
     SegmentVector segments;
 };
 
-inline RawGlobeTileMesh rawGlobeTileMesh(const CanonicalTileID& canonical, bool generateBorders) {
+inline RawGlobeTileMesh rawGlobeTileMesh(
+    const CanonicalTileID& canonical,
+    bool generateBorders,
+    const SubdivisionGranularityExpression& granularity = SubdivisionGranularitySetting::globe().tile) {
     const util::TileMesh mesh = util::createTileMesh(
-        {.granularity = SubdivisionGranularitySetting::globe().tile.getGranularityForZoomLevel(canonical.z),
+        {.granularity = granularity.getGranularityForZoomLevel(canonical.z),
          .generateBorders = generateBorders,
          .extendToNorthPole = canonical.y == 0,
          .extendToSouthPole = canonical.y == (1u << canonical.z) - 1});
@@ -63,6 +85,7 @@ inline RawGlobeTileMesh rawGlobeTileMesh(const CanonicalTileID& canonical, bool 
     raw.vertices.resize(mesh.vertices.size() * sizeof(int16_t));
     std::memcpy(raw.vertices.data(), mesh.vertices.data(), raw.vertices.size());
     raw.vertexCount = mesh.vertices.size() / 2;
+    assert(raw.vertexCount <= std::numeric_limits<uint16_t>::max());
     raw.indices.assign(mesh.indices.begin(), mesh.indices.end());
     raw.segments.emplace_back(0, 0, raw.vertexCount, raw.indices.size());
     return raw;
