@@ -49,9 +49,18 @@ void FillBucket::generateBuffers(const GeometryCollection& geometry) {
                                       lineIndexes,
                                       lineSegments,
                                       basicLines,
-                                      basicLineSegments);
+                                      basicLineSegments,
+                                      canonical,
+                                      subdivisionGranularity.fill.getGranularityForZoomLevel(canonical.z));
 #else
-    gfx::generateFillAndOutineBuffers(geometry, vertices, triangles, triangleSegments, basicLines, basicLineSegments);
+    gfx::generateFillAndOutineBuffers(geometry,
+                                      vertices,
+                                      triangles,
+                                      triangleSegments,
+                                      basicLines,
+                                      basicLineSegments,
+                                      canonical,
+                                      subdivisionGranularity.fill.getGranularityForZoomLevel(canonical.z));
 #endif
 }
 
@@ -79,7 +88,7 @@ void FillBucket::addFeature(const GeometryTileFeature& feature,
                             const CanonicalTileID& canonical) {
     const auto vertexOffset = vertices.elements();
 
-    generateBuffers(geometry);
+    generateBuffers(geometry, canonical);
     populateBinders(feature, patternPositions, patternDependencies, index, canonical);
 
     if (retainFeaturesById) {
