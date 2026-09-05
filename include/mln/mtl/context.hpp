@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <memory>
 #include <mln/gfx/draw_mode.hpp>
 #include <mln/gfx/depth_mode.hpp>
 #include <mln/gfx/stencil_mode.hpp>
@@ -96,6 +98,9 @@ public:
     gfx::ShaderProgramBasePtr getGenericShader(gfx::ShaderRegistry&,
                                                const std::string& name,
                                                gfx::ProjectionVariant) override;
+
+    void setAsyncShaderCompilation(bool enabled) override { asyncShaderCompilation = enabled; }
+    bool hasPendingShaderCompiles() const override { return pendingShaderCompiles->load() > 0; }
 
     TileLayerGroupPtr createTileLayerGroup(int32_t layerIndex, std::size_t initialCapacity, std::string name) override;
 
@@ -206,6 +211,10 @@ private:
     std::optional<BufferResource> globeClipMaskUniformsBuffer;
     bool globeClipMaskUniformsBufferUsed = false;
     std::map<std::tuple<uint8_t, bool, bool, bool>, GlobeClipMesh> globeClipMeshes;
+    bool asyncShaderCompilation = false;
+    // Shared with the compile completion handlers so a handler landing after the context is
+    // gone has nothing dangling to decrement.
+    std::shared_ptr<std::atomic<int>> pendingShaderCompiles = std::make_shared<std::atomic<int>>(0);
     const gfx::Renderable* stencilStateRenderable = nullptr;
 
     UniformBufferArray globalUniformBuffers;
