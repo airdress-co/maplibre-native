@@ -4,14 +4,15 @@
     "test": {
       "height": 256,
       "width": 256,
-      "allowed": 0.05
+      "allowed": 0.05,
+      "description": "GL JS's globe hillshade test at zoom 5, the zoom of the raster-dem tile the render test cache holds."
     }
   },
   "center": [
     -118.12,
     36.6
   ],
-  "zoom": 4.5,
+  "zoom": 5,
   "projection": {
     "type": "globe"
   },

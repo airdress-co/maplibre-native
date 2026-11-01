@@ -6,11 +6,13 @@
 #include <mln/gfx/renderer_backend.hpp>
 #include <mln/gfx/symbol_drawable_data.hpp>
 #include <mln/layout/symbol_projection.hpp>
+#include <mln/map/mercator_projection.hpp>
 #include <mln/renderer/buckets/symbol_bucket.hpp>
 #include <mln/renderer/layer_group.hpp>
 #include <mln/renderer/paint_parameters.hpp>
 #include <mln/renderer/paint_property_binder.hpp>
 #include <mln/renderer/layers/render_symbol_layer.hpp>
+#include <mln/renderer/render_tile.hpp>
 #include <mln/renderer/render_tree.hpp>
 #include <mln/shaders/shader_program_base.hpp>
 #include <mln/shaders/symbol_layer_ubo.hpp>
@@ -137,13 +139,19 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
             matrix::ortho(screenMatrix, 0, util::EXTENT, -util::EXTENT, 0, 0, 1);
             matrix::translate(screenMatrix, screenMatrix, 0, -util::EXTENT, 0);
             matrix::translate(screenMatrix, screenMatrix, translate[0], translate[1], 0);
-            projection = parameters.state.getProjectionDataForMatrix(tileID, screenMatrix);
+            projection = MercatorProjection().getProjectionData(parameters.state, tileID, screenMatrix);
         } else {
             constexpr bool nearClipped = false;
             constexpr bool inViewportPixelUnits = false;
             projection = getProjectionData(
-                tileID, parameters, translate, anchor, nearClipped, inViewportPixelUnits, drawable);
+                tileID, parameters, {0.f, 0.f}, anchor, nearClipped, inViewportPixelUnits, drawable);
         }
+        // The translation stays out of the matrices on every projection: the shader adds it to point anchors, and
+        // placement to the positions it lays out (variable anchors, line labels), so it applies once.
+        const std::array<float, 2> tileTranslation = isScreenSpace ? std::array<float, 2>{0.f, 0.f}
+                                                                   : RenderTile::tileUnitTranslation(
+                                                                         tileID, translate, anchor, state);
+        projection.translate = {};
         const auto& matrix = projection.fallbackMatrix;
 #if MLN_UBO_CONSOLIDATION
         projectionUBOVector[i] = toProjectionUBO(projection);
@@ -166,16 +174,6 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
                                           : getLabelPlaneMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
         const mat4 glCoordMatrix = getGlCoordMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
 
-        // On the globe the main matrix is untranslated and the shader adds the translation in tile units;
-        // on Mercator it stays baked into the matrix.
-        std::array<float, 2> tileTranslation = {0.f, 0.f};
-        if (state.isGlobeRendering() && !isScreenSpace && (translate[0] != 0 || translate[1] != 0)) {
-            const float angle = anchor == TranslateAnchorType::Viewport ? static_cast<float>(-state.getBearing())
-                                                                        : 0.0f;
-            const Point<float> rotated = util::rotate(Point<float>{translate[0], translate[1]}, angle);
-            tileTranslation = {tileID.pixelsToTileUnits(rotated.x, currentZoom),
-                               tileID.pixelsToTileUnits(rotated.y, currentZoom)};
-        }
         const float gammaScale = (symbolData.pitchAlignment == AlignmentType::Map
                                       ? static_cast<float>(std::cos(state.getPitch())) * camDist
                                       : 1.0f);

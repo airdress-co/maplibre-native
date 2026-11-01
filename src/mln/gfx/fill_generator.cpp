@@ -1,5 +1,7 @@
 #include <mln/gfx/fill_generator.hpp>
+#include <mln/gfx/fill_large_mesh_arrays.hpp>
 #include <mln/gfx/polyline_generator.hpp>
+#include <mln/util/constants.hpp>
 #include <mln/util/subdivision.hpp>
 
 #ifdef _MSC_VER
@@ -13,6 +15,7 @@
 #pragma warning(pop)
 #endif
 
+#include <algorithm>
 #include <cassert>
 #include <limits>
 
@@ -105,40 +108,54 @@ void addOutlineIndices(const std::size_t base,
     lineSegment.indexLength += nVertices * 2;
 }
 
+bool insideTileX(const GeometryCoordinate& point) {
+    return point.x >= 0 && point.x <= util::EXTENT;
+}
+
+/// On zoom 0 the tile's buffer wraps around the planet onto the tile itself, so the outline keeps only the runs
+/// of vertices inside the tile's X extent, the way the subdivided fill drops its triangles.
+template <class Generator>
+void generateOutline(Generator& generator,
+                     const GeometryCoordinates& ring,
+                     const CanonicalTileID& canonical,
+                     const gfx::PolylineGeneratorOptions& ringOptions) {
+    if (canonical.z != 0 || std::all_of(ring.begin(), ring.end(), insideTileX)) {
+        generator.generate(ring, ringOptions);
+        return;
+    }
+    gfx::PolylineGeneratorOptions runOptions = ringOptions;
+    runOptions.type = FeatureType::LineString;
+    GeometryCoordinates run;
+    for (const auto& point : ring) {
+        if (insideTileX(point)) {
+            run.push_back(point);
+            continue;
+        }
+        if (run.size() > 1) {
+            generator.generate(run, runOptions);
+        }
+        run.clear();
+    }
+    if (run.size() > 1) {
+        generator.generate(run, runOptions);
+    }
+}
+
 void addSubdividedPolygon(const util::SubdivisionResult& subdivided,
                           gfx::VertexVector<FillLayoutVertex>& fillVertices,
                           gfx::IndexVector<gfx::Triangles>& fillIndexes,
                           SegmentVector& fillSegments,
                           gfx::IndexVector<gfx::Lines>& lineIndexes,
                           SegmentVector& lineSegments) {
-    const std::size_t totalVertices = subdivided.vertices.size() / 2;
-    if (totalVertices > maxSegmentVertices) {
-        throw GeometryTooLongException();
-    }
-    const std::size_t startVertices = fillVertices.elements();
-    for (std::size_t i = 0; i < totalVertices; i++) {
-        fillVertices.emplace_back(
-            FillBucket::layoutVertex({subdivided.vertices[i * 2], subdivided.vertices[i * 2 + 1]}));
-    }
-    addFillIndices(fillSegments, fillIndexes, subdivided.triangleIndices, startVertices, totalVertices);
-
-    for (const auto& line : subdivided.lineIndexLists) {
-        if (line.empty()) {
-            continue;
-        }
-        if (lineSegments.empty() || lineSegments.back().vertexLength + totalVertices > maxSegmentVertices) {
-            lineSegments.emplace_back(startVertices, lineIndexes.elements());
-        }
-        auto& lineSegment = lineSegments.back();
-        const auto base = static_cast<uint16_t>(lineSegment.vertexLength);
-        for (std::size_t i = 0; i + 1 < line.size(); i += 2) {
-            lineIndexes.emplace_back(static_cast<uint16_t>(base + line[i]), static_cast<uint16_t>(base + line[i + 1]));
-        }
-        lineSegment.indexLength += line.size();
-    }
-    if (!lineSegments.empty()) {
-        lineSegments.back().vertexLength += totalVertices;
-    }
+    const MeshLines lines{.segments = lineSegments, .indexes = lineIndexes, .lists = subdivided.lineIndexLists};
+    fillLargeMeshArrays(
+        fillVertices,
+        [](int16_t x, int16_t y) { return FillBucket::layoutVertex({x, y}); },
+        fillSegments,
+        fillIndexes,
+        subdivided.vertices,
+        subdivided.triangleIndices,
+        &lines);
 }
 
 } // namespace
@@ -175,12 +192,11 @@ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
         // Optimize polygons with many interior rings for earcut tessellation.
         limitHoles(polygon, 500);
 
-        if (subdivisionGranularity >= 2) {
-            addSubdividedPolygon(util::subdividePolygonWithinLimit(polygon,
-                                                                   canonical,
-                                                                   subdivisionGranularity,
-                                                                   /*generateOutlineLines=*/true,
-                                                                   maxSegmentVertices),
+        if (util::GLOBE_ENABLED && subdivisionGranularity >= 2) {
+            addSubdividedPolygon(util::subdividePolygon(polygon,
+                                                        canonical,
+                                                        subdivisionGranularity,
+                                                        /*generateOutlineLines=*/true),
                                  vertices,
                                  fillIndexes,
                                  fillSegments,
@@ -266,7 +282,8 @@ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
 
     // If we have pre-tessellated geometry, multi-polygons are tessellated
     // together, so we need to add them to the fill segment all at once.
-    if (!geometry.getTriangles().empty()) {
+    // Those triangles are flat: the globe subdivides the polygon instead.
+    if (!geometry.getTriangles().empty() && (!util::GLOBE_ENABLED || subdivisionGranularity < 2)) {
         const std::size_t startVertices = fillVertices.elements();
         std::size_t totalVertices = 0;
         for (const auto& polygon : geometry) {
@@ -281,16 +298,17 @@ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
         // Optimize polygons with many interior rings for earcut tessellation.
         limitHoles(polygon, 500);
 
-        if (subdivisionGranularity >= 2) {
+        if (util::GLOBE_ENABLED && subdivisionGranularity >= 2) {
             for (const auto& ring : polygon) {
-                lineGenerator.generate(util::subdivideVertexLine(ring, subdivisionGranularity, /*isRing=*/true),
-                                       lineOptions);
+                generateOutline(lineGenerator,
+                                util::subdivideVertexLine(ring, subdivisionGranularity, /*isRing=*/true),
+                                canonical,
+                                lineOptions);
             }
-            addSubdividedPolygon(util::subdividePolygonWithinLimit(polygon,
-                                                                   canonical,
-                                                                   subdivisionGranularity,
-                                                                   /*generateOutlineLines=*/true,
-                                                                   maxSegmentVertices),
+            addSubdividedPolygon(util::subdividePolygon(polygon,
+                                                        canonical,
+                                                        subdivisionGranularity,
+                                                        /*generateOutlineLines=*/true),
                                  fillVertices,
                                  fillIndexes,
                                  fillSegments,

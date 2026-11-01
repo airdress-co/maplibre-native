@@ -232,8 +232,7 @@ struct alignas(16) ProjectionUBO {
     /* 144 */ float4 clipping_plane;
     /* 160 */ float projection_transition;
     /* 164 */ float depth_offset;
-    /* 168 */ float pad1;
-    /* 172 */ float pad2;
+    /* 168 */ float2 translate;
     /* 176 */
 };
 static_assert(sizeof(ProjectionUBO) == 11 * 16, "wrong size");
@@ -331,20 +330,30 @@ inline float4 interpolateProjectionFor3D(float2 posInTile, float3 spherePos, flo
 }
 
 inline float4 projectTile(float2 pos, device const ProjectionUBO& projection) {
-    return interpolateProjection(pos, projectToSphere(pos, float2(0.0, 0.0), projection), 0.0, projection);
+    return interpolateProjection(pos, projectToSphere(pos + projection.translate, float2(0.0, 0.0), projection), 0.0, projection);
 }
 
-inline float4 projectTileWithElevation(float2 pos, float elevation, device const ProjectionUBO& projection) {
-    return interpolateProjection(pos, projectToSphere(pos, float2(0.0, 0.0), projection), elevation, projection);
+// The zoom 0 tile's buffer wraps around the planet onto the tile itself, so the line shaders discard the fragments
+// beyond its X extent; every other tile (a mercator width below the whole world's) hands on a value inside it.
+inline float antimeridianClipX(float2 posInTile, device const ProjectionUBO& projection) {
+    return projection.tile_mercator_coords.z * 8192.0 >= 1.0 ? posInTile.x : 0.0;
 }
 
-inline float4 projectTileFor3D(float2 pos, float elevation, device const ProjectionUBO& projection) {
-    return interpolateProjectionFor3D(pos, projectToSphere(pos, pos, projection), elevation, projection);
+inline bool clippedAtAntimeridian(float tileX) {
+    return tileX < 0.0 || tileX >= 8192.0;
 }
 
 // The variant for geometry that can carry pole vertices; rawPos is the untranslated position.
 inline float4 projectTile(float2 pos, float2 rawPos, device const ProjectionUBO& projection) {
-    return interpolateProjection(pos, projectToSphere(pos, rawPos, projection), 0.0, projection);
+    return interpolateProjection(pos, projectToSphere(pos + projection.translate, rawPos, projection), 0.0, projection);
+}
+
+inline float4 projectTileWithElevation(float2 pos, float elevation, device const ProjectionUBO& projection) {
+    return interpolateProjection(pos, projectToSphere(pos + projection.translate, float2(0.0, 0.0), projection), elevation, projection);
+}
+
+inline float4 projectTileFor3D(float2 pos, float elevation, device const ProjectionUBO& projection) {
+    return interpolateProjectionFor3D(pos, projectToSphere(pos + projection.translate, pos, projection), elevation, projection);
 }
 
 #else

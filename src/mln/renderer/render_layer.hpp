@@ -7,6 +7,7 @@
 #include <mln/renderer/render_pass.hpp>
 #include <mln/renderer/render_source.hpp>
 #include <mln/style/layer_properties.hpp>
+#include <mln/style/types.hpp>
 #include <mln/tile/geometry_tile_data.hpp>
 #include <mln/util/mat4.hpp>
 #include <mln/util/tiny_unordered_map.hpp>
@@ -27,6 +28,7 @@ class PatternAtlas;
 class RenderTile;
 class RenderTree;
 class SymbolBucket;
+class TileProjector;
 class TransformState;
 class TransitionParameters;
 class UpdateParameters;
@@ -65,6 +67,12 @@ public:
     size_t end;
 };
 
+/// A symbol layer's `*-translate` in pixels, carried into placement the way GL JS passes `translation`.
+struct SymbolTranslate {
+    std::array<float, 2> offset{0, 0};
+    style::TranslateAnchorType anchor = style::TranslateAnchorType::Map;
+};
+
 class BucketPlacementData {
 public:
     std::reference_wrapper<Bucket> bucket;
@@ -72,6 +80,8 @@ public:
     std::shared_ptr<FeatureIndex> featureIndex;
     std::string sourceId;
     std::optional<SortKeyRange> sortKeyRange;
+    SymbolTranslate textTranslate;
+    SymbolTranslate iconTranslate;
 };
 
 using LayerPlacementData = std::list<BucketPlacementData>;
@@ -113,6 +123,9 @@ public:
     /// Returns true if layer writes to depth buffer by drawing using PaintParameters::depthModeFor3D().
     virtual bool is3D() const { return false; }
 
+    /// Returns true if the layer may draw depth-tested 3D geometry, which the planet's depth hides behind the horizon.
+    virtual bool needsGlobeDepth() const { return is3D(); }
+
     /// Returns true is the layer is subject to placement.
     bool needsPlacement() const;
 
@@ -138,7 +151,7 @@ public:
                                         const float,
                                         const TransformState&,
                                         const float,
-                                        const mat4&,
+                                        const TileProjector&,
                                         const FeatureState&) const {
         return false;
     };
@@ -148,6 +161,8 @@ public:
     virtual void prepare(const LayerPrepareParameters&);
 
     const LayerPlacementData& getPlacementData() const { return placementData; }
+    /// Buckets that another layer places and this layer draws, at its own translation.
+    const LayerPlacementData& getFollowerData() const { return followerData; }
 
     /// Latest evaluated properties.
     Immutable<style::LayerProperties> evaluatedProperties;
@@ -319,6 +334,7 @@ protected:
     RenderPass passes = RenderPass::None;
 
     LayerPlacementData placementData;
+    LayerPlacementData followerData;
 
     // will need to be overridden to handle their activation.
     LayerGroupBasePtr layerGroup;
@@ -407,6 +423,15 @@ protected:
     static auto computeFeatureNDCBound(std::size_t count, const mat4& mat, const GetVertexFn& get) {
         return computeFeatureNDCBound(count, mat, false, get);
     }
+
+    /// @brief The same bound through the tile's projection, for a projection a matrix cannot express.
+    /// @param translation  The layer's translation in tile units.
+    /// @param getVertex    Functor that returns (x, y) in tile units and the elevation in meters.
+    /// @return NDC bounds of what the horizon leaves visible, std::nullopt if that is nothing.
+    static std::optional<NDCBound> computeFeatureNDCBound(std::size_t vertexCount,
+                                                          const TileProjector&,
+                                                          const std::array<float, 2>& translation,
+                                                          const GetVertexFn& getVertex);
 
 private:
     // Some layers may not render correctly on some hardware when the vertex

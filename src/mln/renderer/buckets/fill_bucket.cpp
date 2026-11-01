@@ -38,7 +38,7 @@ bool FillBucket::isSDFPattern(const std::string& layerID) const {
     return it != sdfPatterns.end() && it->second;
 }
 
-void FillBucket::generateBuffers(const GeometryCollection& geometry) {
+void FillBucket::generateBuffers(const GeometryCollection& geometry, const CanonicalTileID& canonical) {
 // MLN_TRIANGULATE_FILL_OUTLINES is defined in fill_bucket.hpp
 #if MLN_TRIANGULATE_FILL_OUTLINES
     gfx::generateFillAndOutineBuffers(geometry,

@@ -1,9 +1,13 @@
 #include <mln/map/vertical_perspective_projection.hpp>
+
 #include <mln/map/transform_state.hpp>
 #include <mln/math/angles.hpp>
+#include <mln/math/wrap.hpp>
 #include <mln/tile/tile_id.hpp>
 #include <mln/util/constants.hpp>
+#include <mln/util/interpolate.hpp>
 #include <mln/util/projection.hpp>
+#include <mln/util/quaternion.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -14,6 +18,10 @@
 namespace mln {
 
 namespace {
+
+/// How far from the polar axis a unit-sphere point can be and still be on its pole, with no longitude of its own:
+/// GL JS `sphereSurfacePointToCoordinates` gives it longitude 0.
+constexpr double POLE_AXIS_DISTANCE = 1e-6;
 
 vec3 rotateX(const vec3& v, double rad) {
     const double c = std::cos(rad);
@@ -54,6 +62,19 @@ vec3 add(const vec3& a, const vec3& b) {
     return {{a[0] + b[0], a[1] + b[1], a[2] + b[2]}};
 }
 
+// GL JS `VerticalPerspectiveTransform._isLineOfSightBlocked`: whether the planet stands between the camera and a
+// point, both on the unit sphere's scale.
+bool lineOfSightBlocked(const vec3& camera, const vec3& point) {
+    const vec3 toPoint = add(point, scaled(camera, -1.0));
+    const double lengthSq = dot(toPoint, toPoint);
+    if (lengthSq == 0) {
+        return false;
+    }
+    const double t = std::clamp(-dot(camera, toPoint) / lengthSq, 0.0, 1.0);
+    const vec3 closest = add(camera, scaled(toPoint, t));
+    return dot(closest, closest) < 1.0;
+}
+
 struct RaySphereIntersection {
     double tMin;
     double tMax;
@@ -71,7 +92,11 @@ std::optional<RaySphereIntersection> raySphereIntersection(const vec3& origin, c
     const double q = -originDotDirection + (originDotDirection < 0 ? 1 : -1) * std::sqrt(discriminant);
     const double t0 = c / q;
     const double t1 = q;
-    return RaySphereIntersection{std::min(t0, t1), std::max(t0, t1)};
+    // Both behind the ray's origin, as for a ray into the sky past a nearby planet: no intersection.
+    if (std::max(t0, t1) < 0) {
+        return std::nullopt;
+    }
+    return RaySphereIntersection{.tMin = std::min(t0, t1), .tMax = std::max(t0, t1)};
 }
 
 double pointPlaneSignedDistance(const vec4& plane, const vec3& point) {
@@ -108,6 +133,18 @@ double distanceOfAnglesRadians(double a, double b) {
     return std::min(d, twoPi - d);
 }
 
+// The integral of 1 / cos(x): where the longitude gets to when the globe turns at a steady rate.
+double integrateSecant(double x) {
+    const double half = 0.5 * x;
+    const double sin = std::sin(half);
+    const double cos = std::cos(half);
+    return std::log(sin + cos) - std::log(cos - sin);
+}
+
+int sign(double value) {
+    return (value > 0) - (value < 0);
+}
+
 } // namespace
 
 Point<double> VerticalPerspectiveProjection::project(const LatLng& latLng, double scale) const {
@@ -125,7 +162,11 @@ void VerticalPerspectiveProjection::tileMatrix(mat4& matrix, const UnwrappedTile
 }
 
 double VerticalPerspectiveProjection::globeRadiusPixels(double worldSize, double centerLatitude) {
-    return worldSize / (2.0 * std::numbers::pi) / std::cos(util::deg2rad(centerLatitude));
+    return worldSize / (2.0 * std::numbers::pi) / planetScale(centerLatitude);
+}
+
+double VerticalPerspectiveProjection::planetScale(double centerLatitude) {
+    return std::cos(util::deg2rad(std::min(std::abs(centerLatitude), util::LATITUDE_MAX)));
 }
 
 vec3 VerticalPerspectiveProjection::tileCoordinatesToSphere(const Point<double>& tilePoint,
@@ -214,7 +255,7 @@ vec3 VerticalPerspectiveProjection::surfaceVector(const LatLng& latLng) {
 LatLng VerticalPerspectiveProjection::surfaceVectorToLatLng(const vec3& surface) {
     const double latitude = util::rad2deg(std::asin(std::clamp(surface[1], -1.0, 1.0)));
     const double lengthXZ = std::sqrt(surface[0] * surface[0] + surface[2] * surface[2]);
-    if (lengthXZ <= 1e-6) {
+    if (lengthXZ <= POLE_AXIS_DISTANCE) {
         return {latitude, 0.0};
     }
     const double acosZ = std::acos(std::clamp(surface[2] / lengthXZ, -1.0, 1.0));
@@ -252,6 +293,12 @@ vec3 VerticalPerspectiveProjection::screenCoordinateToSurface(const TransformSta
     const double horizonRadius = std::sqrt(std::max(0.0, 1.0 - plane[3] * plane[3]));
     const vec3 relative = add(planeIntersection, scaled(horizonCenter, -1.0));
     return add(horizonCenter, scaled(relative, horizonRadius / length(relative)));
+}
+
+bool VerticalPerspectiveProjection::screenCoordinateHitsGlobe(const TransformState& state,
+                                                              const ScreenCoordinate& point) {
+    const vec3 direction = rayDirectionFromPixel(state, point, state.getInverseGlobeViewProjectionMatrix());
+    return raySphereIntersection(state.getGlobeCameraPosition(), direction).has_value();
 }
 
 LatLng VerticalPerspectiveProjection::screenCoordinateToLatLng(const TransformState& state,
@@ -324,8 +371,390 @@ std::optional<LatLng> VerticalPerspectiveProjection::centerForLocationAtPoint(co
     return LatLng{std::clamp(util::rad2deg(lat), -90.0, 90.0), util::rad2deg(lng)};
 }
 
+namespace {
+// GL JS vertical_perspective_camera_helper constants.
+constexpr double RAY_SURFACE_DISTANCE_FOR_SLOWING_START = 0.3;
+constexpr double SLOWING_MULTIPLIER = 0.5;
+constexpr double INTERPOLATE_TO_HEURISTIC_START_LNG = 45.0;
+constexpr double INTERPOLATE_TO_HEURISTIC_END_LNG = 85.0;
+constexpr double INTERPOLATE_TO_HEURISTIC_EXPONENT = 0.25;
+constexpr double INTERPOLATE_TO_HEURISTIC_START_HORIZON = 0.95;
+constexpr double INTERPOLATE_TO_HEURISTIC_END_HORIZON = 0.999;
+constexpr double SLOWING_RADIUS_START = 0.9;
+constexpr double SLOWING_RADIUS_STOP = 0.5;
+constexpr double SLOWING_RADIUS_SLOW_FACTOR = 0.25;
+// GL JS vertical_perspective_transform: how many times the view the area past the Mercator range has grown to when the
+// center is back on its edge.
+constexpr double POLE_AREA_FADE_SCALE = 4.0;
+
+double remapSaturate(double value, double oldMin, double oldMax, double newMin, double newMax) {
+    const double t = std::clamp((value - oldMin) / (oldMax - oldMin), 0.0, 1.0);
+    return newMin + (newMax - newMin) * t;
+}
+
+void zoomTurningThePlanet(TransformState&,
+                          const ScreenCoordinate& anchor,
+                          const LatLng& zoomLocation,
+                          double factor,
+                          double interpolationFactorHorizon);
+} // namespace
+
+void VerticalPerspectiveProjection::zoomAroundPoint(TransformState& state,
+                                                    const ScreenCoordinate& anchor,
+                                                    const LatLng& zoomLocation,
+                                                    double zoomDelta,
+                                                    bool freeBearing) {
+    if (zoomDelta == 0.0) {
+        return;
+    }
+    const LatLng center = state.getLatLng(LatLng::Unwrapped);
+    // A location on a pole has no longitude of its own, so the zoom keeps the center's meridian rather than turning
+    // the planet about the pole towards the longitude the location was given.
+    const bool onPole = std::cos(util::deg2rad(zoomLocation.latitude())) <= POLE_AXIS_DISTANCE;
+    const double dLngRaw = onPole ? 0.0 : differenceOfAnglesDegrees(center.longitude(), zoomLocation.longitude());
+    const double dLng = dLngRaw / (std::abs(dLngRaw / 180.0) + 1.0);
+    const double dLat = differenceOfAnglesDegrees(center.latitude(), zoomLocation.latitude());
+
+    // Slow the movement down when the anchor's ray passes far from the planet.
+    const vec3 rayOrigin = state.getGlobeCameraPosition();
+    const vec3 rayDirection = rayDirectionFromPixel(state, anchor, state.getInverseGlobeViewProjectionMatrix());
+    const vec3 closestPoint = add(rayOrigin, scaled(rayDirection, -dot(rayOrigin, rayDirection)));
+    const double rayDistanceFromGlobeCenter = length(closestPoint);
+    const double distanceFactor = std::exp(
+        -std::max(rayDistanceFromGlobeCenter - 1.0 - RAY_SURFACE_DISTANCE_FOR_SLOWING_START, 0.0) * SLOWING_MULTIPLIER);
+    const double interpolationFactorHorizon = remapSaturate(rayDistanceFromGlobeCenter,
+                                                            INTERPOLATE_TO_HEURISTIC_START_HORIZON,
+                                                            INTERPOLATE_TO_HEURISTIC_END_HORIZON,
+                                                            0.0,
+                                                            1.0);
+
+    // And when the globe is small on the viewport, where that is a stand-in for the anchor being near the horizon.
+    const Size size = state.getSize();
+    const double radius = globeRadiusPixels(Projection::worldSize(state.getScale()), center.latitude()) /
+                          std::min(size.width, size.height);
+    const double radiusFactor = remapSaturate(
+        radius, SLOWING_RADIUS_START, SLOWING_RADIUS_STOP, 1.0, SLOWING_RADIUS_SLOW_FACTOR);
+    const double slowingFactor = std::min(distanceFactor, 1.0 + (radiusFactor - 1.0) * interpolationFactorHorizon);
+
+    const double factor = (1.0 - std::pow(2.0, -zoomDelta)) * slowingFactor;
+    if (freeBearing) {
+        zoomTurningThePlanet(state, anchor, zoomLocation, factor, interpolationFactorHorizon);
+        return;
+    }
+    const LatLng heuristicCenter{std::clamp(center.latitude() + dLat * factor, -90.0, 90.0),
+                                 center.longitude() + dLng * factor};
+
+    LatLng exactCenter = centerForLocationAtPoint(state, zoomLocation, anchor).value_or(center);
+    if (onPole) {
+        exactCenter = LatLng{exactCenter.latitude(), center.longitude(), LatLng::Unwrapped};
+    }
+
+    const double interpolationFactorLongitude = remapSaturate(
+        std::abs(dLngRaw), INTERPOLATE_TO_HEURISTIC_START_LNG, INTERPOLATE_TO_HEURISTIC_END_LNG, 0.0, 1.0);
+    const double heuristicFactor = std::pow(std::max(interpolationFactorLongitude, interpolationFactorHorizon),
+                                            INTERPOLATE_TO_HEURISTIC_EXPONENT);
+    const LatLng target{
+        std::clamp(exactCenter.latitude() +
+                       differenceOfAnglesDegrees(exactCenter.latitude(), heuristicCenter.latitude()) * heuristicFactor,
+                   -90.0,
+                   90.0),
+        exactCenter.longitude() +
+            differenceOfAnglesDegrees(exactCenter.longitude(), heuristicCenter.longitude()) * heuristicFactor};
+    const LatLng constrained = state.constrainedCenter(target, state.getZoom());
+    state.setLatLngZoom(constrained, state.getZoom() + zoomAdjustment(center.latitude(), constrained.latitude()));
+}
+
 double VerticalPerspectiveProjection::zoomAdjustment(double fromLatitude, double toLatitude) {
-    return std::log2(std::cos(util::deg2rad(toLatitude)) / std::cos(util::deg2rad(fromLatitude)));
+    return std::log2(planetScale(toLatitude) / planetScale(fromLatitude));
+}
+
+double VerticalPerspectiveProjection::maxLatitude(const TransformState& state, double zoom) {
+    const double areaRadians = util::deg2rad(90.0 - util::LATITUDE_MAX);
+    const double areaPixels = globeRadiusPixels(Projection::worldSize(std::pow(2.0, zoom)), util::LATITUDE_MAX) *
+                              areaRadians;
+    const Size size = state.getSize();
+    const double reachPixels = std::min(size.width, size.height) / 2.0;
+    const double centerPixels = std::min(areaPixels, reachPixels) *
+                                remapSaturate(areaPixels, reachPixels, reachPixels * POLE_AREA_FADE_SCALE, 1.0, 0.0);
+    return util::LATITUDE_MAX + util::rad2deg(areaRadians * centerPixels / areaPixels);
+}
+
+LatLng VerticalPerspectiveProjection::panCenter(const TransformState& state, const ScreenCoordinate& offset) {
+    // GL JS turns the pan by its bearing, which is the state's with the sign flipped.
+    const double bearing = -state.getBearing();
+    const double x = offset.x * std::cos(bearing) - offset.y * std::sin(bearing);
+    const double y = offset.x * std::sin(bearing) + offset.y * std::cos(bearing);
+
+    const LatLng center = state.getLatLng(LatLng::Unwrapped);
+    const double latitude = center.latitude();
+    const auto inverseScale = [](double lat) {
+        return 1.0 / planetScale(lat);
+    };
+    // Longitude speeds up towards the poles, where the planet is narrower, but as the globe zooms out from 7 to 3 the
+    // latitude it speeds up for is capped at 60°: GL JS's numbers.
+    const double zoomedOut = std::clamp((7.0 - (state.getZoom() + zoomAdjustment(latitude, 0))) / 4.0, 0.0, 1.0);
+    const double longitudeSpeed = util::interpolate(
+        inverseScale(latitude), inverseScale(std::min(std::abs(latitude), 60.0)), zoomedOut);
+    const double degreesPerPixel = 360.0 / (2.0 * std::numbers::pi *
+                                            globeRadiusPixels(Projection::worldSize(state.getScale()), latitude));
+    return {std::clamp(latitude + y * degreesPerPixel, -90.0, 90.0),
+            center.longitude() - x * degreesPerPixel * longitudeSpeed};
+}
+
+namespace {
+// GL JS globe_utils drag constants.
+constexpr double PAN_FALLOFF_BAND = 0.1;
+constexpr double DIAL_MIN_RADIUS_PIXELS = 20.0;
+constexpr double DIAL_RAMP_DEGREES = 12.0;
+constexpr double PAN_MAX_ANGLE = std::numbers::pi * 0.98;
+
+vec3 cross(const vec3& a, const vec3& b) {
+    return {{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}};
+}
+
+// GL JS `orientationFromLngLatBearing`: gl-matrix's `quat.fromEuler(-lng, -lat, bearing)`, bearing in GL JS's sign.
+Quaternion orientationFromLatLngBearing(const LatLng& center, double bearingDegrees) {
+    return Quaternion::fromEulerAngles(
+        util::deg2rad(-center.longitude()), util::deg2rad(-center.latitude()), util::deg2rad(bearingDegrees));
+}
+
+struct Orientation {
+    double latitude;
+    double longitude;
+    double bearing;
+};
+
+// GL JS `lngLatBearingFromOrientation`.
+Orientation orientationToLatLngBearing(const Quaternion& q) {
+    return {.latitude = -util::rad2deg(std::asin(std::clamp(2 * (q.w * q.y - q.z * q.x), -1.0, 1.0))),
+            .longitude = -util::rad2deg(std::atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y))),
+            .bearing = util::rad2deg(std::atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))};
+}
+
+// GL JS `panSurfaceLocation`: the surface point a drag towards `point` aims at. Exact while the ray is well inside the
+// silhouette, then eased off along a hyperbola that matches it in value and slope and saturates short of the far
+// side, so the drag keeps going once the cursor leaves the planet.
+vec3 panSurfaceVector(const TransformState& state, const ScreenCoordinate& point) {
+    const vec3 origin = state.getGlobeCameraPosition();
+    const double distance = length(origin);
+    if (distance <= 1.0) {
+        return VerticalPerspectiveProjection::screenCoordinateToSurface(state, point);
+    }
+    const vec3 u = normalized(origin);
+    const vec3 direction = rayDirectionFromPixel(state, point, state.getInverseGlobeViewProjectionMatrix());
+    const double c = -dot(direction, u);
+    const vec3 lateral = add(direction, scaled(u, c));
+    const double s = length(lateral);
+    if (s < 1e-9) {
+        return VerticalPerspectiveProjection::screenCoordinateToSurface(state, point);
+    }
+    const double angle = std::atan2(s, c);
+    const double handoverAngle = std::asin(1.0 / distance) * (1.0 - PAN_FALLOFF_BAND);
+    if (angle < handoverAngle) {
+        return VerticalPerspectiveProjection::screenCoordinateToSurface(state, point);
+    }
+    const double sinHandover = distance * std::sin(handoverAngle);
+    const double targetAtHandover = std::asin(std::clamp(sinHandover, -1.0, 1.0)) - handoverAngle;
+    const double slopeAtHandover = distance * std::cos(handoverAngle) /
+                                       std::sqrt(std::max(1.0 - sinHandover * sinHandover, 1e-12)) -
+                                   1.0;
+    const double room = PAN_MAX_ANGLE - targetAtHandover;
+    const double excess = angle - handoverAngle;
+    const double target = std::clamp(
+        targetAtHandover + room * (slopeAtHandover * excess) / (room + slopeAtHandover * excess), 0.0, PAN_MAX_ANGLE);
+    return normalized(add(scaled(u, std::cos(target)), scaled(lateral, std::sin(target) / s)));
+}
+
+// The globe camera's orientation; GL JS's bearing is the state's with the sign flipped.
+Quaternion cameraOrientation(const TransformState& state) {
+    return orientationFromLatLngBearing(state.getLatLng(LatLng::Unwrapped), -util::rad2deg(state.getBearing()));
+}
+
+// The rotation about `axis` by `angle`, composed as GL JS's drag composes it: the axis is in the surface-vector frame
+// and the orientation in the Euler frame, hence the swizzle.
+Quaternion rotation(const vec3& axis, double angle) {
+    const double l = length(axis);
+    if (l == 0.0) {
+        return Quaternion::identity;
+    }
+    const double s = std::sin(angle / 2.0);
+    return {axis[1] / l * s, -axis[0] / l * s, axis[2] / l * s, std::cos(angle / 2.0)};
+}
+
+// The orientation after the rotation that brings the surface location `from` to where `to` is.
+Quaternion turned(const Quaternion& orientation, const vec3& from, const vec3& to) {
+    return orientation.multiply(rotation(cross(from, to), std::acos(std::clamp(dot(from, to), -1.0, 1.0))));
+}
+
+// gl-matrix's `quat.slerp`.
+Quaternion slerp(const Quaternion& a, Quaternion b, double t) {
+    double cosOmega = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    if (cosOmega < 0.0) {
+        cosOmega = -cosOmega;
+        b = {-b.x, -b.y, -b.z, -b.w};
+    }
+    double scaleA = 1.0 - t;
+    double scaleB = t;
+    if (1.0 - cosOmega > 1e-6) {
+        const double omega = std::acos(cosOmega);
+        scaleA = std::sin((1.0 - t) * omega) / std::sin(omega);
+        scaleB = std::sin(t * omega) / std::sin(omega);
+    }
+    return {scaleA * a.x + scaleB * b.x,
+            scaleA * a.y + scaleB * b.y,
+            scaleA * a.z + scaleB * b.z,
+            scaleA * a.w + scaleB * b.w};
+}
+
+// The point `t` of the way from one unit vector to another along the great circle.
+vec3 slerp(const vec3& a, const vec3& b, double t) {
+    const double angle = std::acos(std::clamp(dot(a, b), -1.0, 1.0));
+    if (std::sin(angle) < 1e-9) {
+        return a;
+    }
+    return add(scaled(a, std::sin((1.0 - t) * angle) / std::sin(angle)),
+               scaled(b, std::sin(t * angle) / std::sin(angle)));
+}
+
+// The center and bearing of an orientation, the longitude unwrapped around `center`.
+VerticalPerspectiveProjection::CenterAndBearing centerAndBearing(const Quaternion& orientation, const LatLng& center) {
+    const Orientation o = orientationToLatLngBearing(orientation);
+    return {.center = {o.latitude,
+                       center.longitude() +
+                           VerticalPerspectiveProjection::differenceOfAnglesDegrees(center.longitude(), o.longitude)},
+            .bearing = o.bearing};
+}
+
+// zoomAroundPoint with the bearing free. The exact part is the rotation that brings the zoom location back under the
+// anchor; the heuristic part moves the center a `factor` of the way along the great circle towards it, the orientation
+// carried along. They blend by GL JS's horizon factor alone: GL JS also blends by how far the location's longitude is
+// from the center's, which the bearing-held solution needs near a pole and a rotation does not.
+void zoomTurningThePlanet(TransformState& state,
+                          const ScreenCoordinate& anchor,
+                          const LatLng& zoomLocation,
+                          double factor,
+                          double interpolationFactorHorizon) {
+    const LatLng center = state.getLatLng(LatLng::Unwrapped);
+    const Quaternion orientation = cameraOrientation(state);
+    const vec3 location = VerticalPerspectiveProjection::surfaceVector(zoomLocation);
+    const vec3 centerVector = VerticalPerspectiveProjection::surfaceVector(center);
+    const Quaternion exact = turned(orientation, location, panSurfaceVector(state, anchor));
+    const Quaternion heuristic = turned(orientation, slerp(centerVector, location, factor), centerVector);
+    const auto camera = centerAndBearing(
+        slerp(exact, heuristic, std::pow(interpolationFactorHorizon, INTERPOLATE_TO_HEURISTIC_EXPONENT)), center);
+    const LatLng constrained = state.constrainedCenter(camera.center, state.getZoom());
+    state.setLatLngZoom(
+        constrained,
+        state.getZoom() + VerticalPerspectiveProjection::zoomAdjustment(center.latitude(), constrained.latitude()));
+    state.setBearing(-util::deg2rad(camera.bearing));
+}
+} // namespace
+
+VerticalPerspectiveProjection::CenterAndBearing VerticalPerspectiveProjection::dragCamera(
+    const TransformState& state, const ScreenCoordinate& point, const ScreenCoordinate& panDelta) {
+    return centerAndBearing(turned(cameraOrientation(state),
+                                   panSurfaceVector(state, {point.x - panDelta.x, point.y - panDelta.y}),
+                                   panSurfaceVector(state, point)),
+                            state.getLatLng(LatLng::Unwrapped));
+}
+
+VerticalPerspectiveProjection::CenterAndBearing VerticalPerspectiveProjection::flingCamera(
+    const TransformState& state, const ScreenCoordinate& center, const ScreenCoordinate& offset) {
+    const LatLng latLng = state.getLatLng(LatLng::Unwrapped);
+    const double pixels = std::hypot(offset.x, offset.y);
+    if (pixels == 0.0) {
+        return {.center = latLng, .bearing = -util::rad2deg(state.getBearing())};
+    }
+    const vec3 axis = cross(panSurfaceVector(state, {center.x - offset.x / pixels, center.y - offset.y / pixels}),
+                            panSurfaceVector(state, center));
+    const double degreesPerPixel = 360.0 /
+                                   (2.0 * std::numbers::pi *
+                                    globeRadiusPixels(Projection::worldSize(state.getScale()), latLng.latitude()));
+    return centerAndBearing(
+        cameraOrientation(state).multiply(rotation(axis, util::deg2rad(std::min(pixels * degreesPerPixel, 179.5)))),
+        latLng);
+}
+
+VerticalPerspectiveProjection::CenterAndBearing VerticalPerspectiveProjection::interpolateCamera(
+    const CenterAndBearing& from, const CenterAndBearing& to, double t) {
+    return centerAndBearing(slerp(orientationFromLatLngBearing(from.center, from.bearing),
+                                  orientationFromLatLngBearing(to.center, to.bearing),
+                                  t),
+                            from.center);
+}
+
+LatLng VerticalPerspectiveProjection::dragCenter(const TransformState& state,
+                                                 const ScreenCoordinate& point,
+                                                 const ScreenCoordinate& panDelta) {
+    const LatLng center = state.getLatLng(LatLng::Unwrapped);
+    // GL JS's bearing is the state's with the sign flipped.
+    const double bearing = -util::rad2deg(state.getBearing());
+    const Orientation swung = orientationToLatLngBearing(
+        turned(cameraOrientation(state),
+               panSurfaceVector(state, {point.x - panDelta.x, point.y - panDelta.y}),
+               panSurfaceVector(state, point)));
+
+    // A swing over a pole turns the bearing around; with the bearing held, the center stops on that pole.
+    const double latitude = std::abs(differenceOfAnglesDegrees(bearing, swung.bearing)) <= 90.0
+                                ? swung.latitude
+                                : (swung.latitude > 0.0 ? 90.0 : -90.0);
+
+    // The swing's longitude is ill-conditioned near the pole, so within the last 12 degrees before the pole's edge the
+    // cursor turns a dial around the pole instead, blended in with a smoothstep and in full from the edge on. GL JS
+    // takes the sweep from the screen with y down.
+    const double poleLatitude = center.latitude() >= 0.0 ? 90.0 : -90.0;
+    vec4 clip;
+    const ScreenCoordinate pole = latLngToScreenCoordinate(state, {poleLatitude, 0.0}, clip);
+    const double rx = point.x - pole.x;
+    const double ry = pole.y - point.y;
+    const double ramp = std::clamp(
+        1.0 - (util::LATITUDE_MAX - std::abs(center.latitude())) / DIAL_RAMP_DEGREES, 0.0, 1.0);
+    const double dial = ramp * ramp * (3.0 - 2.0 * ramp);
+    const double dLngSwing = util::wrap(swung.longitude - center.longitude() + 180.0, 0.0, 360.0) - 180.0;
+    double dLngDial = 0.0;
+    if (dial > 0.0) {
+        const double radiusSquared = std::max(rx * rx + ry * ry, DIAL_MIN_RADIUS_PIXELS * DIAL_MIN_RADIUS_PIXELS);
+        const double dTheta = (rx * -panDelta.y - ry * panDelta.x) / radiusSquared;
+        dLngDial = (poleLatitude > 0.0 ? 1.0 : -1.0) * util::rad2deg(dTheta);
+    }
+    return {latitude, center.longitude() + (1.0 - dial) * dLngSwing + dial * dLngDial};
+}
+
+double VerticalPerspectiveProjection::differenceOfAnglesDegrees(double from, double to) {
+    const double a = util::wrap(from, 0.0, 360.0);
+    const double b = util::wrap(to, 0.0, 360.0);
+    const double direct = b - a;
+    const double around = b > a ? direct - 360.0 : direct + 360.0;
+    return std::abs(direct) < std::abs(around) ? direct : around;
+}
+
+double VerticalPerspectiveProjection::surfaceDistancePixels(double worldSize,
+                                                            double centerLatitude,
+                                                            const LatLng& a,
+                                                            const LatLng& b) {
+    const double radians = std::acos(std::clamp(dot(surfaceVector(a), surfaceVector(b)), -1.0, 1.0));
+    return radians * globeRadiusPixels(worldSize, centerLatitude);
+}
+
+LatLng VerticalPerspectiveProjection::interpolateLatLng(const LatLng& start,
+                                                        double deltaLatitude,
+                                                        double deltaLongitude,
+                                                        double t) {
+    const double latitude = std::clamp(start.latitude() + deltaLatitude * t, -90.0, 90.0);
+    const double startLatitude = std::clamp(start.latitude(), -util::LATITUDE_MAX, util::LATITUDE_MAX);
+    const double endLatitude = std::clamp(start.latitude() + deltaLatitude, -util::LATITUDE_MAX, util::LATITUDE_MAX);
+    if (std::abs(endLatitude - startLatitude) <= 1.0) {
+        return {latitude, start.longitude() + deltaLongitude * t};
+    }
+    const bool onDifferentHemispheres = sign(endLatitude) != sign(startLatitude);
+    const double sampleStart = util::deg2rad(onDifferentHemispheres ? -std::abs(startLatitude)
+                                                                    : std::abs(startLatitude));
+    const double sampleEnd = util::deg2rad(std::abs(endLatitude));
+    const double valueStart = integrateSecant(sampleStart);
+    const double valueEnd = integrateSecant(sampleEnd);
+    const double valueT = integrateSecant(sampleStart + t * (sampleEnd - sampleStart));
+    const double longitudeT = (valueT - valueStart) / (valueEnd - valueStart);
+    return {latitude, start.longitude() + deltaLongitude * longitudeT};
 }
 
 ProjectionData VerticalPerspectiveProjection::getProjectionData(const TransformState& state,
@@ -335,26 +764,63 @@ ProjectionData VerticalPerspectiveProjection::getProjectionData(const TransformS
             .tileMercatorCoords = mercatorTileCoords(tileID),
             .clippingPlane = state.getGlobeClippingPlane(),
             .projectionTransition = state.getProjectionTransition(),
-            .fallbackMatrix = mercatorMatrix};
+            .fallbackMatrix = mercatorMatrix,
+            .cameraPosition = state.getGlobeCameraPosition()};
 }
 
 ProjectedTilePoint VerticalPerspectiveProjection::projectTilePoint(const ProjectionData& data,
                                                                    const UnwrappedTileID& tileID,
-                                                                   const Point<double>& point) const {
-    const vec3 sphere = tileCoordinatesToSphere(point, tileID);
+                                                                   const Point<double>& point,
+                                                                   const double elevation) const {
+    const vec3 surface = tileCoordinatesToSphere(point, tileID);
+    const double heightScale = 1.0 + elevation / globeRadiusMeters;
+    const vec3 sphere = scaled(surface, heightScale);
     vec4 pos = {{sphere[0], sphere[1], sphere[2], 1}};
     matrix::transformMat4(pos, pos, data.mainMatrix);
+    // GL JS: the horizon plane hides a point on the surface, and only the planet itself hides a raised one.
     const auto& plane = data.clippingPlane;
-    const double side = plane[0] * sphere[0] + plane[1] * sphere[1] + plane[2] * sphere[2] + plane[3];
-    return {.point = {pos[0] / pos[3], pos[1] / pos[3]}, .signedDistanceFromCamera = pos[3], .occluded = side < 0.0};
+    const bool occluded = heightScale <= 1.0
+                              ? plane[0] * surface[0] + plane[1] * surface[1] + plane[2] * surface[2] + plane[3] < 0.0
+                              : lineOfSightBlocked(data.cameraPosition, sphere);
+    return {.point = {pos[0] / pos[3], pos[1] / pos[3]}, .signedDistanceFromCamera = pos[3], .occluded = occluded};
+}
+
+ProjectedTilePoint VerticalPerspectiveProjection::drawnTilePoint(const ProjectionData& data,
+                                                                 const UnwrappedTileID& tileID,
+                                                                 const Point<double>& point,
+                                                                 const double elevation) const {
+    const auto globe = projectTilePoint(data, tileID, point, elevation);
+    const double t = data.projectionTransition;
+    if (t > 0.999) {
+        return globe;
+    }
+    // The shaders' `interpolateProjection`: the sphere blended with Mercator, the horizon clipping through the
+    // blended depth from a fifth of the hand-over on. Raised geometry keeps its depth and the globe hides it.
+    vec4 flat = {{point.x, point.y, elevation, 1}};
+    matrix::transformMat4(flat, flat, data.fallbackMatrix);
+    const double globeW = globe.signedDistanceFromCamera;
+    const double w = util::interpolate(flat[3], globeW, t);
+    const double globeness = std::clamp((t - 0.2) / 0.8, 0.0, 1.0);
+    bool occluded = globeness > 0 && globe.occluded;
+    if (elevation <= 0) {
+        const vec3 surface = tileCoordinatesToSphere(point, tileID);
+        const auto& plane = data.clippingPlane;
+        const double clippingZ = 1.0 -
+                                 (plane[0] * surface[0] + plane[1] * surface[1] + plane[2] * surface[2] + plane[3]);
+        occluded = globeness * clippingZ * globeW > w;
+    }
+    return {.point = {util::interpolate(flat[0], globe.point.x * globeW, t) / w,
+                      util::interpolate(flat[1], globe.point.y * globeW, t) / w},
+            .signedDistanceFromCamera = w,
+            .occluded = occluded};
 }
 
 double VerticalPerspectiveProjection::circleRadiusCorrection(const TransformState& state) const {
-    return std::cos(util::deg2rad(state.getLatLng().latitude()));
+    return util::interpolate(1.0, planetScale(state.getLatLng().latitude()), state.getProjectionTransition());
 }
 
 double VerticalPerspectiveProjection::pixelScale(const TransformState& state) const {
-    return 1.0 / std::cos(util::deg2rad(state.getLatLng().latitude()));
+    return util::interpolate(1.0, 1.0 / planetScale(state.getLatLng().latitude()), state.getProjectionTransition());
 }
 
 double VerticalPerspectiveProjection::pitchedTextCorrection(const TransformState& state,
@@ -364,7 +830,8 @@ double VerticalPerspectiveProjection::pitchedTextCorrection(const TransformState
     const double mercatorY = tileAnchor.y / util::EXTENT * scale + tileID.canonical.y * scale;
     const double latitude = 2.0 * std::atan(std::exp(std::numbers::pi - (mercatorY * std::numbers::pi * 2.0))) -
                             std::numbers::pi * 0.5;
-    return circleRadiusCorrection(state) / std::cos(latitude);
+    return util::interpolate(
+        1.0, planetScale(state.getLatLng().latitude()) / std::cos(latitude), state.getProjectionTransition());
 }
 
 } // namespace mln

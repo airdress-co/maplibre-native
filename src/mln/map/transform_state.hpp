@@ -136,7 +136,7 @@ public:
     // Projection
     void setProjectionDefinition(const ProjectionDefinition&);
     /// 0 is Mercator, 1 is the globe, in between is the transition.
-    double getProjectionTransition() const { return projectionTransition; }
+    double getProjectionTransition() const { return util::GLOBE_ENABLED ? projectionTransition : 0.0; }
 
     /// The globe's view state for the current camera, valid while `isGlobeRendering()`; cached with the matrices.
     double getGlobeRadiusPixels() const;
@@ -144,7 +144,7 @@ public:
     const mat4& getInverseGlobeViewProjectionMatrix() const;
     const vec4& getGlobeClippingPlane() const;
     const vec3& getGlobeCameraPosition() const;
-    bool isGlobeRendering() const { return projectionTransition > 0; }
+    bool isGlobeRendering() const { return util::GLOBE_ENABLED && projectionTransition > 0; }
 
     // Matrix
     void matrixFor(mat4&, const UnwrappedTileID&) const;
@@ -153,10 +153,12 @@ public:
     ProjectionData getProjectionData(const UnwrappedTileID&, const mat4& projMatrix) const;
     ProjectionData getProjectionData(const UnwrappedTileID&) const;
     ProjectionData getProjectionDataForMatrix(const UnwrappedTileID&, const mat4& mercatorMatrix) const;
-    ScreenCoordinate getCenterOffset() const;
 
     // Dimensions
     Size getSize() const;
+    // Viewport center offset, from [size.width / 2, size.height / 2], defined
+    // by |edgeInsets| in screen coordinates, with top left origin.
+    ScreenCoordinate getCenterOffset() const;
     void setSize(const Size& size_);
 
     EdgeInsets getFrustumOffset() const;
@@ -183,6 +185,8 @@ public:
 
     // Position
     LatLng getLatLng(LatLng::WrapMode = LatLng::Unwrapped) const;
+    /// The world copy of a location nearest the center, which bounds can keep past the antimeridian.
+    LatLng latLngNearCenter(const LatLng&) const;
     double getCenterAltitude() const;
     double pixel_x() const;
     double pixel_y() const;
@@ -192,8 +196,11 @@ public:
     /// Lowest zoom allowed with the map centered at this latitude: the globe lets the zoom fall below `getMinZoom()`
     /// toward the poles by the anchored-zoom adjustment, so the planet keeps its size on screen.
     double getMinZoomAtLatitude(double latitude) const;
-    /// The center `constrain` would settle on for this one, so a zoom adjustment can be computed against it.
-    LatLng constrainedCenter(const LatLng&) const;
+    /// The same for a camera on the globe or not, whatever the current projection.
+    double getMinZoomAtLatitude(double latitude, bool globe) const;
+    /// The center `constrain` would settle on for this one at this zoom: on the globe the zoom decides how close to a
+    /// pole the center can be.
+    LatLng constrainedCenter(const LatLng&, double zoom) const;
     uint8_t getIntegerZoom() const;
     double getZoomFraction() const;
 
@@ -255,6 +262,8 @@ public:
     // Conversion
     ScreenCoordinate latLngToScreenCoordinate(const LatLng&) const;
     ScreenCoordinate latLngToScreenCoordinate(const LatLng&, vec4&) const;
+    /// Whether the globe hides a location from the camera; a Mercator map hides nothing.
+    bool isLocationOccluded(const LatLng&) const;
     LatLng screenCoordinateToLatLng(const ScreenCoordinate&, LatLng::WrapMode = LatLng::Unwrapped) const;
     // Implements mapbox-gl-js pointCoordinate() : MercatorCoordinate.
     TileCoordinate screenCoordinateToTileCoordinate(const ScreenCoordinate&, uint8_t atZoom) const;
@@ -262,7 +271,10 @@ public:
     double zoomScale(double zoom) const;
     double scaleZoom(double scale) const;
 
-    bool valid() const { return !size.isEmpty() && (scale >= min_scale && scale <= max_scale); }
+    // Toward the poles the globe goes below the minimum scale; setLatLngZoom holds it to the floor there.
+    bool valid() const {
+        return !size.isEmpty() && (isGlobeRendering() ? scale > 0 : scale >= min_scale) && scale <= max_scale;
+    }
 
     float getCameraToTileDistance(const UnwrappedTileID&) const;
     float maxPitchScaleFactor() const;
@@ -285,9 +297,7 @@ public:
 
 private:
     bool rotatedNorth() const;
-
-    // Viewport center offset, from [size.width / 2, size.height / 2], defined
-    // by |edgeInsets| in screen coordinates, with top left origin.
+    double constrainedMinScale() const;
 
     LatLngBounds bounds;
 
@@ -309,6 +319,7 @@ private:
 
     mat4 coordinatePointMatrix(const mat4& projMatrix) const;
     mat4 getPixelMatrix() const;
+    TileCoordinate mercatorScreenCoordinateToTileCoordinate(const ScreenCoordinate&, uint8_t atZoom) const;
 
     void setScalePoint(double scale, const ScreenCoordinate& point);
 
