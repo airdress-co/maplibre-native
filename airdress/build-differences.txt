@@ -2,3 +2,14 @@
 # between two builds of the same release tag, one per line, each under a
 # comment saying why. Measured first on an upstream release built with no
 # patches; this list only shrinks.
+
+# Gradle writes the publish time into the Maven repository's metadata
+# (<lastUpdated>), and its checksum files follow. They describe the
+# repository, not the library: every AAR, JAR and .so inside matched.
+# Measured by fork-repro on ios-v7.0.0 with no patches, 2026-11-03: Android
+# 669 files compared, these 5 differ; iOS 272 files, none differ.
+*/maven-metadata.xml
+*/maven-metadata.xml.md5
+*/maven-metadata.xml.sha1
+*/maven-metadata.xml.sha256
+*/maven-metadata.xml.sha512
