@@ -7,6 +7,9 @@
 #   [resolve]  path (or glob) = ours | theirs | union, the only changes we
 #              make to the author's work: how a conflict between the whole
 #              pull request and base + infra is resolved. Each rule says why.
+#              A rule for one particular conflict names the head it was
+#              written for, { rule = "theirs", head = "<sha>" }: under a new
+#              head it no longer applies, and the import stops for review.
 
 pull_request = "maplibre/maplibre-native#4533"
 ref = "refs/pull/4533/head"
@@ -65,7 +68,7 @@ title = "fixes, the remaining layer types, platform bindings and tests"
 "platform/ios/CHANGELOG.md" = "union"
 # The pull request moves matrixFor's body into projection->tileMatrix; the
 # base's side differs from main only by a cast clang-tidy later removed.
-"src/mln/map/transform_state.cpp" = "theirs"
+"src/mln/map/transform_state.cpp" = { rule = "theirs", head = "bec8a12440d0c8a3bd320f151e1b16de39285705" }
 # infra/0001 deletes these from the built tree; the pull request's edits to
 # them stay deleted.
 ".github/workflows/*" = "ours"
