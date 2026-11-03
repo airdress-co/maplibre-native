@@ -39,7 +39,12 @@ the globe group is dropped.
 | `.github/workflows/fork-reapply.yml` | daily: a newer upstream release or a new globe head, as a pull request |
 
 Upstream's own workflows never run here: `main` has none of upstream's files,
-and `infra/0001` removes upstream's workflows from every applied tree. Every
+and `infra/0001` removes upstream's workflows from every applied tree. **Never
+push a ref whose tree still holds them**, such as a commit of the globe pull
+request or any upstream branch: GitHub runs a pushed ref's own workflows. A
+copy of the pull request's head kept as a branch here started upstream's
+`validate-scripts` within seconds (2026-11-03; cancelled, the workflow
+disabled, the branch deleted). Every
 job runs on GitHub-hosted runners; this repository never has a self-hosted
 one.
 

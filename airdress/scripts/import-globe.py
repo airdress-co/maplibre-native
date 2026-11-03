@@ -64,7 +64,9 @@ COMMITTER = {
     "GIT_COMMITTER_EMAIL": os.environ.get("SERIES_COMMITTER_EMAIL", "fork-series@noreply.airdress.co"),
 }
 PURE = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-PHASE_RE = re.compile(r"\(globe phase (\d+)[a-z]?\)\s*$")
+# "(globe phase 9)", "(globe phase 9a)", "(globe phase 12du)": the author's
+# sub-steps run past one letter.
+PHASE_RE = re.compile(r"\(globe phase (\d+)[a-z]*\)\s*$")
 
 
 class Stop(Exception):
@@ -226,13 +228,28 @@ def merge_trees(repo: Path, merge_base: str, ours: str, theirs: str) -> tuple[st
     return tree, list(conflicts.values())
 
 
-def rule_for(path: str, rules: dict[str, str]) -> str | None:
-    if path in rules:
-        return rules[path]
-    for pattern, rule in rules.items():
-        if fnmatch.fnmatchcase(path, pattern):
-            return rule
-    return None
+def rule_for(path: str, rules: dict, head: str) -> str | None:
+    """The rule for a conflicting path under this head, or None.
+
+    A rule is either a string (ours, theirs, union), true for every head, or
+    a table {rule, head}: written for one conflict at one head of the pull
+    request. Under any other head it does not apply, so a re-import that
+    meets the path in conflict again stops for a person to look, instead of
+    resolving a conflict the rule was never written for.
+    """
+    entry = rules.get(path)
+    if entry is None:
+        for pattern, e in rules.items():
+            if fnmatch.fnmatchcase(path, pattern):
+                entry = e
+                break
+    if entry is None:
+        return None
+    if isinstance(entry, str):
+        return entry
+    if entry.get("head") and entry["head"] != head:
+        return None
+    return entry.get("rule")
 
 
 def resolve(repo: Path, c: Conflict, rule: str) -> tuple[str, str] | None:
@@ -301,7 +318,7 @@ def phase_message(ph: Phase, head: str, deferred: list[str], resolved: list[tupl
 def import_globe(repo: Path, head: str, upstream: str) -> list[str]:
     cfg = read_phases()
     base, names = read_series()
-    rules: dict[str, str] = cfg.get("resolve", {})
+    rules: dict = cfg.get("resolve", {})
     ours_group = [n for n in names if n.startswith("ours/")]
     apply_infra(repo, base, names, upstream)
     fetch_globe(repo, head, cfg.get("ref", "refs/pull/4533/head"))
@@ -319,7 +336,7 @@ def import_globe(repo: Path, head: str, upstream: str) -> list[str]:
         resolved: dict[str, tuple[str, str] | None] = {}
         deferred, by_rule, unruled = [], [], []
         for c in conflicts:
-            rule = rule_for(c.path, rules)
+            rule = rule_for(c.path, rules, head)
             if is_last:
                 if rule is None:
                     unruled.append(c.path)

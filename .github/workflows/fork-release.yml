@@ -1,8 +1,11 @@
-# A release of the series: apply it to its base, push the applied branch and
-# both platform tags once (all three refused if any exists), build the
-# Android Maven repository and the iOS xcframework twice each on fresh
-# GitHub-hosted runners, compare the builds, attest, and publish one GitHub
-# Release per platform tag. Both apps pin these assets by SHA-256.
+# A release of the series: apply it to its base and push the applied branch
+# once (refused if it or either tag exists), build the Android Maven
+# repository and the iOS xcframework twice each on fresh GitHub-hosted
+# runners from that branch's commit, compare the builds, and only then push
+# both platform tags, attest, and publish one GitHub Release per tag. A build
+# or comparison that fails leaves the branch as the record and no tag, so
+# the release number is not spent on an artifact nobody can use. Both apps
+# pin these assets by SHA-256.
 name: fork-release
 
 on:
@@ -27,6 +30,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       branch: ${{ steps.push.outputs.branch }}
+      sha: ${{ steps.push.outputs.sha }}
       android: ${{ steps.push.outputs.android }}
       ios: ${{ steps.push.outputs.ios }}
     steps:
@@ -38,7 +42,7 @@ jobs:
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
-      - name: Apply, and push the branch and both tags once
+      - name: Apply, and push the branch once
         id: push
         env:
           TOKEN: ${{ steps.bot.outputs.token }}
@@ -56,12 +60,11 @@ jobs:
             echo "$branch, $android or $ios exists: an applied branch and its tags are pushed once and never moved" >&2
             exit 1
           fi
-          git -C applied tag "$android"
-          git -C applied tag "$ios"
           # The applied tree has none of upstream's workflows (infra/0001), so
-          # this push runs nothing.
-          git -C applied push -q "$remote" "$branch" "refs/tags/$android" "refs/tags/$ios"
-          { echo "branch=$branch"; echo "android=$android"; echo "ios=$ios"; } >> "$GITHUB_OUTPUT"
+          # this push runs nothing. The tags follow once the builds agree.
+          git -C applied push -q "$remote" "$branch"
+          { echo "branch=$branch"; echo "sha=$(git -C applied rev-parse HEAD)"
+            echo "android=$android"; echo "ios=$ios"; } >> "$GITHUB_OUTPUT"
 
   android:
     name: android (${{ matrix.run }})
@@ -74,16 +77,15 @@ jobs:
         run: [first, second]
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     env:
       BUILDTYPE: Release
       IS_LOCAL_DEVELOPMENT: false
       MLN_ANDROID_STL: c++_static
+      ABIS: arm64-v8a armeabi-v7a x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ needs.apply.outputs.android }}
+          ref: ${{ needs.apply.outputs.sha }}
           submodules: recursive
           persist-credentials: false
       - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
@@ -101,8 +103,10 @@ jobs:
         working-directory: platform/android
         run: |
           echo "cmake.dir=$(dirname "$(dirname "$(command -v cmake)")")" >> local.properties
-          RENDERER=opengl make apackage
-          ./gradlew :MapLibreAndroid:publishOpenglReleasePublications -PpublicationRepositoryUrl="file://$RUNNER_TEMP/maven"
+          # The ABIs both apps ship, not upstream's apackage target, which
+          # builds all four.
+          ./gradlew -Pmaplibre.abis="$ABIS" :MapLibreAndroid:publishOpenglReleasePublications \
+            -PpublicationRepositoryUrl="file://$RUNNER_TEMP/maven"
       - name: Zip
         id: zip
         run: |
@@ -110,11 +114,6 @@ jobs:
           name="maplibre-android-$version-maven.zip"
           (cd "$RUNNER_TEMP/maven" && find . -type f -print0 | sort -z | xargs -0 touch -h -d @0 && find . -type f | sort | TZ=UTC zip -X -q -@ "$RUNNER_TEMP/$name")
           echo "name=$name" >> "$GITHUB_OUTPUT"
-      - name: Attest
-        if: matrix.run == 'first'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: ${{ runner.temp }}/${{ steps.zip.outputs.name }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-${{ matrix.run }}
@@ -131,23 +130,16 @@ jobs:
         run: [first, second]
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ needs.apply.outputs.ios }}
+          ref: ${{ needs.apply.outputs.sha }}
           submodules: recursive
           persist-credentials: false
       - name: Build the dynamic xcframework (Metal, globe on)
         run: |
           bazel build //platform/ios:MapLibre.dynamic --//:renderer=metal --//:globe=true --compilation_mode=opt
           cp "$(bazel info --compilation_mode=opt bazel-bin)/platform/ios/MapLibre.dynamic.xcframework.zip" "$RUNNER_TEMP/"
-      - name: Attest
-        if: matrix.run == 'first'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: ${{ runner.temp }}/MapLibre.dynamic.xcframework.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ios-${{ matrix.run }}
@@ -160,6 +152,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -171,6 +165,29 @@ jobs:
         run: |
           python3 airdress/scripts/compare-builds.py android builds/android-first builds/android-second
           python3 airdress/scripts/compare-builds.py ios builds/ios-first builds/ios-second
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            builds/android-first/*.zip
+            builds/ios-first/*.zip
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: bot
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+      - name: Push both tags, now that the builds agree
+        env:
+          TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ needs.apply.outputs.sha }}
+          ANDROID: ${{ needs.apply.outputs.android }}
+          IOS: ${{ needs.apply.outputs.ios }}
+        run: |
+          # Lightweight tags through the API, as airdress-bot, which alone may
+          # create them (the tag rulesets).
+          for t in "$ANDROID" "$IOS"; do
+            GH_TOKEN="$TOKEN" gh api "repos/$REPO/git/refs" -f ref="refs/tags/$t" -f sha="$SHA" >/dev/null
+          done
       - name: Release notes and checksums
         env:
           BRANCH: ${{ needs.apply.outputs.branch }}
