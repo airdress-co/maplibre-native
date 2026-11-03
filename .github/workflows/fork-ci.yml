@@ -35,10 +35,33 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The pull request's own commits, for the message check.
+          fetch-depth: 0
+      - name: No internal references in the pull request's commits, title or body
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          airdress/scripts/commit-messages.sh --range "$BASE_SHA..$HEAD_SHA"
+          printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" | airdress/scripts/commit-messages.sh --stdin "the pull request"
+      - name: No internal references in main's new commits
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          # A branch's first push has no "before".
+          case "$BEFORE" in 0000000000000000000000000000000000000000) range="$AFTER" ;; *) range="$BEFORE..$AFTER" ;; esac
+          airdress/scripts/commit-messages.sh --range "$range"
       - name: Tooling tests
         run: python3 -m unittest discover -s airdress/test -v
       - name: Files, series and entries agree; the series applies; a refresh reproduces it
         run: python3 airdress/scripts/series-check.py --apply --repo "$APPLIED" --divergence-out divergence.md
+      - name: No internal references in the patches' commit messages
+        run: airdress/scripts/commit-messages.sh --range "$(awk '$1 == "base" { print $2 }' patches/series)..HEAD" --repo "$APPLIED"
       - name: The globe group is a fresh import of its recorded head
         run: python3 airdress/scripts/series-check.py --globe
       - name: No document numbers in the patches
