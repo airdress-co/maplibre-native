@@ -1,2 +1,0 @@
--dontwarn java.lang.ClassValue
--dontwarn javax.lang.model.element.Modifier

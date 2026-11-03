@@ -1,3 +1,0 @@
-# Avoid line conversions between Unix (LF) and Windows (CRLF)
-
-test/fixtures/storage/assets/* binary

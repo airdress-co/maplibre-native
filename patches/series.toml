@@ -1,0 +1,30 @@
+# One entry per patch in patches/series. airdress/scripts/series-check.py
+# holds the two files to each other.
+#
+#   file       the patch, under patches/
+#   group      infra | globe | ours (and the directory it lives in)
+#   summary    one line (infra, ours); a globe patch's is its phase title
+#   upstream   globe: the pull request it is imported from
+#   author     globe: whose work it is, kept from the pull request's commits
+#   offer      infra: never. ours: undecided | owner-declined | offered-to-author
+#              | offered-upstream | taken | merged | superseded (the owner's
+#              call, per patch; "not yet" is undecided). Globe: not ours to offer.
+#   route      ours: author-branch | review-comment | upstream-pr
+#   link       ours: the offer, once made
+#   drop_when  what makes the patch unnecessary
+#   tests      ours: the tests that prove it, run by name in CI's "ours" job
+
+[[patch]]
+file = "infra/0001-fork-ci.patch"
+group = "infra"
+summary = "Remove upstream's workflows, Dependabot and Renovate from the built tree"
+offer = "never"
+drop_when = "never: upstream's release workflows publish to Maven Central and CocoaPods and must not run here"
+
+[[patch]]
+file = "infra/0002-packaging.patch"
+group = "infra"
+summary = "A copyright line for the fork's changes above upstream's notices"
+offer = "never"
+drop_when = "never"
+

@@ -1,7 +1,0 @@
-{
-    "default": {
-        "log": [
-            [1, "WARNING", "ParseStyle", "layer 'background': paint must be an object"]
-        ]
-    }
-}

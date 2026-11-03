@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Robert Jefe Lindstaedt <robert.lindstaedt@gmail.com>
+Date: Tue, 3 Nov 2026 12:00:00 +0000
+Subject: [PATCH] Add the fork's copyright line above upstream's notices
+
+---
+ LICENSE.md | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/LICENSE.md b/LICENSE.md
+index 3b7caec7e91d1f93f18a072dc7f418c768b8f5e6..11a32b4724ef6f93c78e7e418728aa327d0f3251 100644
+--- a/LICENSE.md
++++ b/LICENSE.md
+@@ -1,5 +1,8 @@
+ BSD 2-Clause License
+ 
++Copyright (c) 2026, Airdress contributors. Changes to MapLibre Native, distributed
++under the same licence.
++
+ Copyright (c) 2021 MapLibre contributors
+ 
+ Copyright (c) 2018-2021 MapTiler.com

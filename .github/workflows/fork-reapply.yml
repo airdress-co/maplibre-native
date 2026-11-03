@@ -1,0 +1,142 @@
+# Daily: carries the series forward onto what upstream has moved.
+#
+#   - a newer upstream release (android-v* or ios-v*, no pre-release) than
+#     the base: the series re-applied onto it, the globe re-imported;
+#   - a new head of the globe pull request (#4533): the globe re-imported
+#     onto the current base;
+#   - the pull request merged, and a release containing the merge: the globe
+#     group dropped.
+#
+# Each becomes a pull request to main by airdress-bot, carrying the
+# range-diff, so a person reviews code and merges it; nothing is pushed to
+# main here, and nothing is ever rewritten. A conflict with no rule opens a
+# draft pull request naming where it stopped.
+name: fork-reapply
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Re-apply onto this upstream tag instead of the newest release"
+        required: false
+      head:
+        description: "Import this #4533 head instead of the current one"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-reapply
+  cancel-in-progress: false
+
+jobs:
+  reapply:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: What moved upstream
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_BASE: ${{ inputs.base }}
+          INPUT_HEAD: ${{ inputs.head }}
+        run: |
+          base="$(awk '$1 == "base" { print $2 }' patches/series)"
+          head="$(awk '$1 == "globe-pr" { print $3 }' patches/series)"
+          pr="$(gh api repos/maplibre/maplibre-native/pulls/4533 --jq '{state, merged, sha: .head.sha, merge: .merge_commit_sha}')"
+          new_head="${INPUT_HEAD:-$(jq -r .sha <<<"$pr")}"
+          # The newest stable release of either platform, by tag date.
+          newest="$(git ls-remote --tags --sort=-v:refname https://github.com/maplibre/maplibre-native.git 'android-v*' 'ios-v*' \
+            | awk '{ sub("refs/tags/", "", $2); print $2 }' | grep -vE '\^\{\}$|pre|alpha|beta|rc|globe' | head -50)"
+          new_base="${INPUT_BASE:-}"
+          if [ -z "$new_base" ]; then
+            git remote add upstream https://github.com/maplibre/maplibre-native.git
+            git fetch -q --filter=blob:none --no-tags upstream $(for t in $newest; do echo "refs/tags/$t:refs/tags/$t"; done) "refs/tags/$base:refs/tags/$base"
+            new_base="$(for t in $newest; do echo "$(git log -1 --format=%ct "$t") $t"; done | sort -rn | head -1 | cut -d' ' -f2)"
+            [ "$(git log -1 --format=%ct "$new_base")" -gt "$(git log -1 --format=%ct "$base")" ] || new_base="$base"
+          fi
+          {
+            echo "base=$base"; echo "new_base=$new_base"
+            echo "head=$head"; echo "new_head=$new_head"
+            echo "pr_state=$(jq -r .state <<<"$pr")"; echo "pr_merged=$(jq -r .merged <<<"$pr")"
+          } | tee -a "$GITHUB_OUTPUT"
+      - name: Nothing new
+        if: steps.state.outputs.new_base == steps.state.outputs.base && steps.state.outputs.new_head == steps.state.outputs.head
+        run: echo "base and globe head unchanged"
+      - name: Re-apply
+        id: reapply
+        if: steps.state.outputs.new_base != steps.state.outputs.base || steps.state.outputs.new_head != steps.state.outputs.head
+        env:
+          NEW_BASE: ${{ steps.state.outputs.new_base }}
+          NEW_HEAD: ${{ steps.state.outputs.new_head }}
+        run: |
+          set +e
+          sed -i "s|^base .*|base $NEW_BASE|" patches/series
+          status=0
+          # infra first, onto the new base; then the globe, re-imported; then ours.
+          python3 airdress/scripts/import-globe.py --head "$NEW_HEAD" --repo import-globe > import.log 2>&1 || status=$?
+          cat import.log
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          trigger="$NEW_BASE-$(echo "$NEW_HEAD" | cut -c1-10)"
+          echo "trigger=$trigger" >> "$GITHUB_OUTPUT"
+          exit 0
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        if: steps.reapply.outcome == 'success'
+        id: bot
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+      - name: Pull request
+        if: steps.reapply.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          STATUS: ${{ steps.reapply.outputs.status }}
+          TRIGGER: ${{ steps.reapply.outputs.trigger }}
+          BASE: ${{ steps.state.outputs.base }}
+          NEW_BASE: ${{ steps.state.outputs.new_base }}
+          HEAD_OLD: ${{ steps.state.outputs.head }}
+          HEAD_NEW: ${{ steps.state.outputs.new_head }}
+          PR_STATE: ${{ steps.state.outputs.pr_state }}
+        run: |
+          branch="reapply/$TRIGGER"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          if [ -n "$(git ls-remote "$remote" "refs/heads/$branch")" ]; then
+            echo "$branch exists: its pull request is open"; exit 0
+          fi
+          git config user.name "airdress-bot[bot]"
+          git config user.email "airdress-bot[bot]@users.noreply.github.com"
+          git checkout -q -b "$branch"
+          git add -A patches
+          draft=""
+          title="Re-apply: base $NEW_BASE, #4533 at ${HEAD_NEW:0:10}"
+          if [ "$STATUS" != "0" ]; then
+            draft="--draft"
+            title="Re-apply stopped: base $NEW_BASE, #4533 at ${HEAD_NEW:0:10}"
+            git add -A airdress 2>/dev/null || true
+          fi
+          git commit -q -m "$title" || { echo "no change in the patches"; exit 0; }
+          git push -q "$remote" "$branch"
+          {
+            echo "Base \`$BASE\` → \`$NEW_BASE\`; #4533 head \`$HEAD_OLD\` → \`$HEAD_NEW\` (state: $PR_STATE)."
+            echo
+            if [ "$STATUS" != "0" ]; then
+              echo "**The import stopped** (exit $STATUS). A conflict the rules in \`airdress/globe-phases.toml\` do not cover needs a rule, or a group-3 patch needs resolving:"
+            else
+              echo "The import log:"
+            fi
+            echo
+            echo '```'
+            tail -40 import.log
+            echo '```'
+            echo
+            echo "Review with \`git range-diff\` of the applied trees before and after (\`airdress/README.md\`)."
+          } > body.md
+          gh pr create --repo "$REPO" --base main --head "$branch" --title "$title" --body-file body.md $draft

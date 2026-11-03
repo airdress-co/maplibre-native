@@ -1,5 +1,0 @@
-**/render-tests/cache.db*
-**/render-tests/results/*
-!**/render-tests/results/.gitkeep
-**/actual.png
-**/diff.png

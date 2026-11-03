@@ -1,0 +1,146 @@
+# The fork's CI. main holds the patch series, not upstream's tree, so every
+# job first applies the series to its base and runs upstream's own build and
+# suites in the applied tree.
+#
+# Only GitHub-hosted runners, ever: this is a public repository, and a pull
+# request from anyone could run code on a self-hosted one. Only GitHub-owned
+# actions, pinned by SHA: the repository's Actions allowlist permits nothing
+# else. Upstream's composite actions are not used, since they call
+# third-party ones.
+name: fork-ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APPLIED: applied
+
+jobs:
+  series:
+    name: series
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tooling tests
+        run: python3 -m unittest discover -s airdress/test -v
+      - name: Files, series and entries agree; the series applies; a refresh reproduces it
+        run: python3 airdress/scripts/series-check.py --apply --repo "$APPLIED" --divergence-out divergence.md
+      - name: The globe group is a fresh import of its recorded head
+        run: python3 airdress/scripts/series-check.py --globe
+      - name: No document numbers in the patches
+        env:
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+        run: airdress/scripts/doc-numbers.sh "$HEAD_REF"
+      - name: Divergence
+        run: cat divergence.md >> "$GITHUB_STEP_SUMMARY"
+
+  core:
+    name: core (globe ${{ matrix.globe }})
+    needs: series
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # ON: the globe and its tests. OFF: upstream's suites unchanged, the
+        # globe compiled out.
+        globe: ["ON", "OFF"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply the series
+        run: airdress/scripts/apply.sh --repo "$APPLIED"
+      - name: Install dependencies
+        working-directory: applied
+        run: .github/scripts/install-linux-deps
+      - name: Build
+        working-directory: applied
+        run: |
+          cmake --preset linux-opengl -DMLN_WITH_GLOBE=${{ matrix.globe }} -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build-linux-opengl --target mbgl-test-runner mbgl-render-test-runner mbgl-expression-test
+      - name: C++ tests
+        working-directory: applied
+        run: xvfb-run -a build-linux-opengl/mbgl-test-runner
+      - name: Render tests
+        working-directory: applied
+        run: xvfb-run -a build-linux-opengl/mbgl-render-test-runner --manifestPath=metrics/linux-opengl.json
+      - name: Expression tests
+        working-directory: applied
+        run: build-linux-opengl/expression-test/mbgl-expression-test
+      - name: Upload the render test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: render-tests-globe-${{ matrix.globe }}
+          path: applied/metrics/linux-opengl.html
+          if-no-files-found: ignore
+
+  android:
+    name: android
+    needs: series
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    env:
+      BUILDTYPE: Release
+      IS_LOCAL_DEVELOPMENT: false
+      MLN_ANDROID_STL: c++_static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply the series
+        run: airdress/scripts/apply.sh --repo "$APPLIED"
+      - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v4
+        with:
+          node-version-file: applied/.nvmrc
+      - name: Generated style code
+        working-directory: applied
+        run: |
+          npm ci --ignore-scripts
+          node platform/android/scripts/generate-style-code.mjs
+      - name: Unit tests (OpenGL ES)
+        working-directory: applied/platform/android
+        run: |
+          echo "cmake.dir=$(dirname "$(dirname "$(command -v cmake)")")" >> local.properties
+          RENDERER=opengl make run-android-unit-test
+      - name: Build the library (OpenGL ES, arm64-v8a)
+        working-directory: applied/platform/android
+        run: ./gradlew :MapLibreAndroid:assembleOpenglRelease -Pmaplibre.abis=arm64-v8a
+
+  ios:
+    name: ios
+    needs: series
+    # GitHub-hosted: free on a public repository. Never a self-hosted Mac.
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply the series
+        run: airdress/scripts/apply.sh --repo "$APPLIED"
+      - name: Build the xcframework (globe on)
+        working-directory: applied/platform/ios
+        run: bazel build //platform/ios:MapLibre.dynamic --//:renderer=metal --//:globe=true --compilation_mode=opt
+      - name: iOS unit tests
+        working-directory: applied/platform/ios
+        run: bazel test //platform/ios/test:ios_test --test_output=errors --//:renderer=metal --//:globe=true

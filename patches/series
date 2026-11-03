@@ -1,0 +1,7 @@
+# The upstream base the series applies to, the globe pull request's
+# recorded head, then the patches in order: infra, globe, ours.
+# Maintained by airdress/scripts/refresh.sh and import-globe.sh; see
+# airdress/README.md.
+base ios-v7.0.0
+infra/0001-fork-ci.patch
+infra/0002-packaging.patch

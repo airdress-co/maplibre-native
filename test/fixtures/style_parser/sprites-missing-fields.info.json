@@ -1,8 +1,0 @@
-{
-    "default": {
-        "log": [
-            [1, "WARNING", "ParseStyle", "id must be defined for sprite object"],
-            [1, "WARNING", "ParseStyle", "url must be defined for sprite object"]
-        ]
-    }
-}

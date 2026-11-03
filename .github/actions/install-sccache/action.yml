@@ -1,8 +1,0 @@
-name: install-sccache
-description: "Install sccache"
-runs:
-  using: "composite"
-  steps:
-  - name: Install sccache
-    run: ${{ github.action_path }}/install-sccache
-    shell: bash

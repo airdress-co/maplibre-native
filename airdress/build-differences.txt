@@ -1,0 +1,4 @@
+# Paths (globs, as compare-builds.py prints them) whose bytes may differ
+# between two builds of the same release tag, one per line, each under a
+# comment saying why. Measured first on an upstream release built with no
+# patches; this list only shrinks.

@@ -1,0 +1,73 @@
+# How airdress/scripts/import-globe.py turns maplibre/maplibre-native#4533 into
+# patches/globe/*.patch. Written once per phase boundary; a new phase in the
+# pull request needs an entry here before it can be imported.
+#
+#   [phase.N]  name   the patch file's topic: globe/NN-<name>.patch
+#              title  the commit subject's tail: "Globe phase N of M: <title>"
+#   [resolve]  path (or glob) = ours | theirs | union, the only changes we
+#              make to the author's work: how a conflict between the whole
+#              pull request and base + infra is resolved. Each rule says why.
+
+pull_request = "maplibre/maplibre-native#4533"
+ref = "refs/pull/4533/head"
+
+[phase.1]
+name = "projection-seam"
+title = "the projection seam and a per-drawable projection UBO"
+
+[phase.2]
+name = "project-tile-prelude"
+title = "projectTile in the shader preludes, the fill family switched to it"
+
+[phase.3]
+name = "projection-style-property"
+title = "the projection root style property"
+
+[phase.4]
+name = "fill-background-metal"
+title = "fill and background on the globe on Metal"
+
+[phase.5]
+name = "subdivision-pole-caps"
+title = "subdivided geometry and tile meshes capped at the poles"
+
+[phase.6]
+name = "camera"
+title = "unproject, gesture, ease and constrain on the globe"
+
+[phase.7]
+name = "tile-cover"
+title = "the tiles the camera can see on the globe"
+
+[phase.8]
+name = "symbols"
+title = "symbols placed and collided on the globe"
+
+[phase.9]
+name = "lines-metal"
+title = "lines on the globe on Metal"
+
+[phase.10]
+name = "opengl"
+title = "the globe on OpenGL"
+
+[phase.11]
+name = "glfw-toggle"
+title = "the GLFW app toggles the globe"
+
+[phase.12]
+name = "fixes-and-tests"
+title = "fixes, the remaining layer types, platform bindings and tests"
+
+[resolve]
+# Adjacent entries at the top of each changelog: keep both.
+"platform/android/CHANGELOG.md" = "union"
+"platform/ios/CHANGELOG.md" = "union"
+# The pull request moves matrixFor's body into projection->tileMatrix; the
+# base's side differs from main only by a cast clang-tidy later removed.
+"src/mln/map/transform_state.cpp" = "theirs"
+# infra/0001 deletes these from the built tree; the pull request's edits to
+# them stay deleted.
+".github/workflows/*" = "ours"
+".github/dependabot.yml" = "ours"
+".github/renovate.json" = "ours"
