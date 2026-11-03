@@ -45,7 +45,7 @@ done
 [ -n "$branch" ] || branch="applied/$base"
 read_lines names series_names
 
-for name in "${names[@]}"; do
+for name in "${names[@]+"${names[@]}"}"; do
     group_of "$name" >/dev/null
     [ -f "$PATCH_DIR/$name" ] || die "patches/series lists $name, which does not exist"
 done
@@ -73,7 +73,7 @@ git -C "$repo" checkout -q -f -B "$branch" "$(base_commit "$repo" "$base")"
 
 if [ "${#names[@]}" -gt 0 ]; then
     patch_paths=()
-    for name in "${names[@]}"; do patch_paths+=("$PATCH_DIR/$name"); done
+    for name in "${names[@]+"${names[@]}"}"; do patch_paths+=("$PATCH_DIR/$name"); done
     if ! git_pure -C "$repo" -c user.name="$GIT_COMMITTER_NAME" -c user.email="$GIT_COMMITTER_EMAIL" \
             am -q -3 --keep-cr --committer-date-is-author-date "${patch_paths[@]}"; then
         next="$(cat "$am_dir/next" 2>/dev/null || echo 0)"
