@@ -138,12 +138,33 @@ jobs:
       BUILDTYPE: Release
       IS_LOCAL_DEVELOPMENT: false
       MLN_ANDROID_STL: c++_static
+      # The NDK build of libmaplibre through ccache: CMake reads these from the
+      # environment, so Gradle's externalNativeBuild picks them up.
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CCACHE_MAXSIZE: 3G
+      # Absolute paths differ per checkout; keep the hashes comparable.
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Apply the series
         run: airdress/scripts/apply.sh --repo "$APPLIED"
+      - name: ccache
+        run: sudo apt-get install -y ccache
+      # PR and main runs only: a release never builds from a cache, so its
+      # two builds stay independent (fork-release.yml).
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ccache
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: android-${{ hashFiles('patches/**', 'applied/platform/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: android-
       - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
         with:
           distribution: temurin
@@ -177,6 +198,20 @@ jobs:
           persist-credentials: false
       - name: Apply the series
         run: airdress/scripts/apply.sh --repo "$APPLIED"
+      # PR and main runs only, as for Android: a release never builds from
+      # a cache. Bazel's disk cache holds action outputs, its repository
+      # cache the downloads; both through a user bazelrc.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/bazel-disk
+            ~/.cache/bazel-repo
+          key: ios-${{ hashFiles('patches/**', 'applied/.bazelversion', 'applied/MODULE.bazel') }}
+          restore-keys: ios-
+      - name: Bazel caches
+        run: |
+          printf 'build --disk_cache=%s\nbuild --repository_cache=%s\n' \
+            "$HOME/.cache/bazel-disk" "$HOME/.cache/bazel-repo" >> ~/.bazelrc
       - name: Build the xcframework (globe on)
         working-directory: applied/platform/ios
         run: bazel build //platform/ios:MapLibre.dynamic --//:renderer=metal --//:globe=true --compilation_mode=opt
