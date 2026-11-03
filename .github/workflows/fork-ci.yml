@@ -35,8 +35,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # The pull request's own commits, for the message check.
-          fetch-depth: 0
       - name: No internal references in the pull request's commits, title or body
         if: github.event_name == 'pull_request'
         env:
@@ -45,6 +43,9 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          # Commits only, no trees or blobs: a full clone of this fork is all
+          # of upstream's history and took over 30 minutes.
+          git fetch -q --no-tags --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
           airdress/scripts/commit-messages.sh --range "$BASE_SHA..$HEAD_SHA"
           printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" | airdress/scripts/commit-messages.sh --stdin "the pull request"
       - name: No internal references in main's new commits
@@ -54,7 +55,10 @@ jobs:
           AFTER: ${{ github.event.after }}
         run: |
           # A branch's first push has no "before".
-          case "$BEFORE" in 0000000000000000000000000000000000000000) range="$AFTER" ;; *) range="$BEFORE..$AFTER" ;; esac
+          case "$BEFORE" in
+            0000000000000000000000000000000000000000) range="$AFTER~1..$AFTER"; git fetch -q --no-tags --filter=tree:0 --depth=2 origin "$AFTER" ;;
+            *) range="$BEFORE..$AFTER"; git fetch -q --no-tags --filter=tree:0 origin "$BEFORE" "$AFTER" ;;
+          esac
           airdress/scripts/commit-messages.sh --range "$range"
       - name: Tooling tests
         run: python3 -m unittest discover -s airdress/test -v
