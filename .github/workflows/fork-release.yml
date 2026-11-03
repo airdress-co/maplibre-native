@@ -114,10 +114,21 @@ jobs:
           name="maplibre-android-$version-maven.zip"
           (cd "$RUNNER_TEMP/maven" && find . -type f -print0 | sort -z | xargs -0 touch -h -d @0 && find . -type f | sort | TZ=UTC zip -X -q -@ "$RUNNER_TEMP/$name")
           echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Native symbols (the unstripped libraries, as upstream's apackage keeps them)
+        if: matrix.run == 'first'
+        run: |
+          version="$(cat platform/android/VERSION)"
+          (cd platform/android/MapLibreAndroid/build/intermediates/merged_native_libs/openglRelease/*/out/lib \
+            && TZ=UTC zip -X -q -r "$RUNNER_TEMP/maplibre-android-$version-native-symbols.zip" .)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-${{ matrix.run }}
           path: ${{ runner.temp }}/${{ steps.zip.outputs.name }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.run == 'first'
+        with:
+          name: android-symbols
+          path: ${{ runner.temp }}/maplibre-android-*-native-symbols.zip
 
   ios:
     name: ios (${{ matrix.run }})
@@ -138,8 +149,14 @@ jobs:
           persist-credentials: false
       - name: Build the dynamic xcframework (Metal, globe on)
         run: |
-          bazel build //platform/ios:MapLibre.dynamic --//:renderer=metal --//:globe=true --compilation_mode=opt
+          # Upstream's own release flags for MapLibre.dynamic (ios-release.yml),
+          # dSYMs included, so a crash inside MapLibre can be symbolicated.
+          bazel build --compilation_mode=opt --//:renderer=metal --//:globe=true \
+            --features=dead_strip,thin_lto --objc_enable_binary_stripping --apple_generate_dsym \
+            //platform/ios:MapLibre.dynamic --embed_label=maplibre_ios_"$(cat platform/ios/VERSION)"
           cp "$(bazel info --compilation_mode=opt bazel-bin)/platform/ios/MapLibre.dynamic.xcframework.zip" "$RUNNER_TEMP/"
+          chmod +w "$RUNNER_TEMP/MapLibre.dynamic.xcframework.zip"
+          zip -q "$RUNNER_TEMP/MapLibre.dynamic.xcframework.zip" LICENSE.md
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ios-${{ matrix.run }}
@@ -163,6 +180,7 @@ jobs:
           path: builds
       - name: The two builds of each platform agree
         run: |
+          # The symbols are not compared; they are the same build's own libraries.
           python3 airdress/scripts/compare-builds.py android builds/android-first builds/android-second
           python3 airdress/scripts/compare-builds.py ios builds/ios-first builds/ios-second
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -194,6 +212,7 @@ jobs:
         run: |
           base="$(awk '$1 == "base" { print $2 }' patches/series)"
           head="$(awk '$1 == "globe-pr" { print $3 }' patches/series)"
+          cp builds/android-symbols/*.zip builds/android-first/
           (cd builds/android-first && sha256sum ./*.zip > SHA256SUMS)
           (cd builds/ios-first && sha256sum ./*.zip > SHA256SUMS)
           {
