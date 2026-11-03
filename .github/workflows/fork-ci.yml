@@ -67,9 +67,21 @@ jobs:
         run: airdress/scripts/apply.sh --repo "$APPLIED"
       - name: Install dependencies
         working-directory: applied
-        run: .github/scripts/install-linux-deps
+        run: |
+          .github/scripts/install-linux-deps
+          # The linux preset launches the compiler through ccache; upstream's CI
+          # overrides it with sccache on its own S3 cache, which we do not have.
+          sudo apt-get install -y ccache
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-core-${{ matrix.globe }}-${{ github.sha }}
+          restore-keys: ccache-core-${{ matrix.globe }}-
       - name: Build
         working-directory: applied
+        env:
+          CCACHE_DIR: /home/runner/.cache/ccache
+          CCACHE_MAXSIZE: 2G
         run: |
           cmake --preset linux-opengl -DMLN_WITH_GLOBE=${{ matrix.globe }} -DCMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build-linux-opengl --target mbgl-test-runner mbgl-render-test-runner mbgl-expression-test
