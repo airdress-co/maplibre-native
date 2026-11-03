@@ -1,0 +1,22 @@
+# Local hooks for the series (prek or pre-commit). CI runs the same checks.
+default_install_hook_types: [pre-commit, commit-msg]
+repos:
+  - repo: local
+    hooks:
+      - id: commit-messages
+        name: no internal references in the commit message
+        entry: airdress/scripts/commit-messages.sh --file
+        language: system
+        stages: [commit-msg]
+      - id: doc-numbers
+        name: no document numbers in the patches
+        entry: airdress/scripts/doc-numbers.sh
+        language: system
+        pass_filenames: false
+        files: ^patches/
+      - id: series-check
+        name: files, series and entries agree
+        entry: python3 airdress/scripts/series-check.py
+        language: system
+        pass_filenames: false
+        files: ^(patches/|airdress/)
