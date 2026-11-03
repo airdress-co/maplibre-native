@@ -1,0 +1,3590 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Carmack <johncarmack@me.com>
+Date: Thu, 27 Aug 2026 01:46:58 +0000
+Subject: [PATCH] Globe 05/13, phase 5: subdivided geometry and tile meshes
+ capped at the poles
+
+Imported from maplibre/maplibre-native#4533 at bec8a12440d0c8a3bd320f151e1b16de39285705,
+first-parent commits aef0619a1b..aef0619a1b (1).
+
+Conflicting hunks kept on the base's side here; the last phase
+carries the pull request's final version of each:
+  src/mln/renderer/buckets/fill_bucket.cpp
+---
+ CMakeLists.txt                                |   5 +
+ bazel/core.bzl                                |   6 +
+ include/mln/gfx/fill_generator.hpp            |   8 +-
+ include/mln/shaders/mtl/background.hpp        |   4 +-
+ include/mln/shaders/mtl/common.hpp            |  26 +-
+ include/mln/shaders/mtl/fill.hpp              |  12 +-
+ include/mln/util/subdivision.hpp              |  52 ++
+ include/mln/util/subdivision_granularity.hpp  |  49 ++
+ include/mln/util/tile_mesh.hpp                |  32 +
+ metrics/ignores/platform-android-vulkan.json  |   5 +-
+ metrics/ignores/platform-android.json         |   5 +-
+ metrics/ignores/platform-linux-opengl.json    |   5 +-
+ metrics/ignores/platform-linux-vulkan.json    |   5 +-
+ metrics/ignores/platform-macos-webgpu.json    |   5 +-
+ metrics/ignores/windows-egl.json              |   5 +-
+ metrics/ignores/windows-opengl.json           |   5 +-
+ metrics/ignores/windows-vulkan.json           |   5 +-
+ .../projection/globe/background/expected.png  | Bin 0 -> 2466 bytes
+ .../projection/globe/background/style.json    |  20 +
+ .../globe/fill-grid-pitched/expected.png      | Bin 12644 -> 12369 bytes
+ .../projection/globe/fill-grid/expected.png   | Bin 11592 -> 11428 bytes
+ .../globe/fill-planet-solid/expected.png      | Bin 0 -> 2466 bytes
+ .../globe/fill-planet-solid/style.json        |  34 +
+ .../globe/fill-planet-tiles/expected.png      | Bin 0 -> 15860 bytes
+ .../globe/fill-planet-tiles/style.json        |  33 +
+ src/mln/gfx/fill_generator.cpp                |  77 ++-
+ src/mln/layout/pattern_layout.hpp             |   5 +
+ src/mln/renderer/bucket_parameters.hpp        |   2 +
+ src/mln/renderer/buckets/fill_bucket.cpp      |  15 +-
+ src/mln/renderer/buckets/fill_bucket.hpp      |   6 +-
+ src/mln/renderer/buckets/line_bucket.cpp      |  11 +-
+ src/mln/renderer/buckets/line_bucket.hpp      |   4 +
+ src/mln/renderer/globe_tile_mesh.hpp          |  71 +++
+ .../layers/render_background_layer.cpp        |  17 +-
+ src/mln/renderer/paint_parameters.cpp         |   3 +-
+ src/mln/renderer/render_orchestrator.cpp      |   4 +-
+ src/mln/renderer/renderer_impl.cpp            |  23 +-
+ src/mln/renderer/tile_pyramid.cpp             |  10 +-
+ src/mln/renderer/tile_pyramid.hpp             |   1 +
+ src/mln/shaders/segment.hpp                   |   5 +
+ src/mln/tile/geometry_tile.cpp                |  10 +
+ src/mln/tile/geometry_tile.hpp                |   2 +
+ src/mln/tile/geometry_tile_worker.cpp         |  30 +-
+ src/mln/tile/geometry_tile_worker.hpp         |   3 +
+ src/mln/tile/tile.hpp                         |   2 +
+ src/mln/util/subdivision.cpp                  | 594 ++++++++++++++++++
+ src/mln/util/tile_mesh.cpp                    |  69 ++
+ test/util/subdivision.test.cpp                | 309 +++++++++
+ 48 files changed, 1550 insertions(+), 44 deletions(-)
+ create mode 100644 include/mln/util/subdivision.hpp
+ create mode 100644 include/mln/util/subdivision_granularity.hpp
+ create mode 100644 include/mln/util/tile_mesh.hpp
+ create mode 100644 metrics/integration/render-tests/projection/globe/background/expected.png
+ create mode 100644 metrics/integration/render-tests/projection/globe/background/style.json
+ create mode 100644 metrics/integration/render-tests/projection/globe/fill-planet-solid/expected.png
+ create mode 100644 metrics/integration/render-tests/projection/globe/fill-planet-solid/style.json
+ create mode 100644 metrics/integration/render-tests/projection/globe/fill-planet-tiles/expected.png
+ create mode 100644 metrics/integration/render-tests/projection/globe/fill-planet-tiles/style.json
+ create mode 100644 src/mln/renderer/globe_tile_mesh.hpp
+ create mode 100644 src/mln/util/subdivision.cpp
+ create mode 100644 src/mln/util/tile_mesh.cpp
+ create mode 100644 test/util/subdivision.test.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6bfb637f0c7dabe9bbfce8fb0b6b2ddda66c616b..50e4284bf3ab59679b0f346ce3f39719c75bb3d4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -471,6 +471,9 @@ list(APPEND INCLUDE_FILES
+     ${PROJECT_SOURCE_DIR}/include/mln/util/size.hpp
+     ${PROJECT_SOURCE_DIR}/include/mln/util/string_indexer.hpp
+     ${PROJECT_SOURCE_DIR}/include/mln/util/string.hpp
++    ${PROJECT_SOURCE_DIR}/include/mln/util/subdivision.hpp
++    ${PROJECT_SOURCE_DIR}/include/mln/util/subdivision_granularity.hpp
++    ${PROJECT_SOURCE_DIR}/include/mln/util/tile_mesh.hpp
+     ${PROJECT_SOURCE_DIR}/include/mln/util/symbol_error_observer.hpp
+     ${PROJECT_SOURCE_DIR}/include/mln/util/thread.hpp
+     ${PROJECT_SOURCE_DIR}/include/mln/util/tile_server_options.hpp
+@@ -1017,6 +1020,8 @@ list(APPEND SRC_FILES
+     ${PROJECT_SOURCE_DIR}/src/mln/util/stopwatch.cpp
+     ${PROJECT_SOURCE_DIR}/src/mln/util/stopwatch.hpp
+     ${PROJECT_SOURCE_DIR}/src/mln/util/string.cpp
++    ${PROJECT_SOURCE_DIR}/src/mln/util/subdivision.cpp
++    ${PROJECT_SOURCE_DIR}/src/mln/util/tile_mesh.cpp
+     ${PROJECT_SOURCE_DIR}/src/mln/util/string_indexer.cpp
+     ${PROJECT_SOURCE_DIR}/src/mln/util/thread.cpp
+     ${PROJECT_SOURCE_DIR}/src/mln/util/thread_local.hpp
+diff --git a/bazel/core.bzl b/bazel/core.bzl
+index 9b098f7ec0a5ec0ba9de54b749a65fe127101c20..f6a054379c9c13aa544b6a1dafdd0d45c187eb30 100644
+--- a/bazel/core.bzl
++++ b/bazel/core.bzl
+@@ -232,6 +232,7 @@ MLN_CORE_SOURCE = [
+     "src/mln/renderer/cross_faded_property_evaluator.cpp",
+     "src/mln/renderer/cross_faded_property_evaluator.hpp",
+     "src/mln/renderer/data_driven_property_evaluator.hpp",
++    "src/mln/renderer/globe_tile_mesh.hpp",
+     "src/mln/renderer/group_by_layout.cpp",
+     "src/mln/renderer/group_by_layout.hpp",
+     "src/mln/renderer/image_manager.cpp",
+@@ -617,6 +618,7 @@ MLN_CORE_SOURCE = [
+     "src/mln/util/stopwatch.hpp",
+     "src/mln/util/string.cpp",
+     "src/mln/util/string_indexer.cpp",
++    "src/mln/util/subdivision.cpp",
+     "src/mln/util/thread.cpp",
+     "src/mln/util/thread_local.hpp",
+     "src/mln/util/thread_pool.cpp",
+@@ -626,6 +628,7 @@ MLN_CORE_SOURCE = [
+     "src/mln/util/tile_cover.hpp",
+     "src/mln/util/tile_cover_impl.cpp",
+     "src/mln/util/tile_cover_impl.hpp",
++    "src/mln/util/tile_mesh.cpp",
+     "src/mln/util/tile_range.hpp",
+     "src/mln/util/default_style.cpp",
+     "src/mln/util/tile_server_options.cpp",
+@@ -875,10 +878,13 @@ MLN_CORE_HEADERS = [
+     "include/mln/util/scoped.hpp",
+     "include/mln/util/size.hpp",
+     "include/mln/util/string.hpp",
++    "include/mln/util/subdivision.hpp",
++    "include/mln/util/subdivision_granularity.hpp",
+     "include/mln/util/symbol_error_observer.hpp",
+     "include/mln/util/string_indexer.hpp",
+     "include/mln/util/tile_server_options.hpp",
+     "include/mln/util/thread.hpp",
++    "include/mln/util/tile_mesh.hpp",
+     "include/mln/util/tileset.hpp",
+     "include/mln/util/timer.hpp",
+     "include/mln/util/tiny_unordered_map.hpp",
+diff --git a/include/mln/gfx/fill_generator.hpp b/include/mln/gfx/fill_generator.hpp
+index 5d27068cd552b1b2ccc4d6ff10cc2adbc7c76cf7..4ee309c3ddd53782aca383d36b127337af7bfa7b 100644
+--- a/include/mln/gfx/fill_generator.hpp
++++ b/include/mln/gfx/fill_generator.hpp
+@@ -22,7 +22,9 @@ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
+                                   gfx::IndexVector<gfx::Triangles>& fillIndexes,
+                                   SegmentVector& fillSegments,
+                                   gfx::IndexVector<gfx::Lines>& lineIndexes,
+-                                  SegmentVector& lineSegments);
++                                  SegmentVector& lineSegments,
++                                  const CanonicalTileID& canonical,
++                                  uint32_t subdivisionGranularity = 1);
+ 
+ /// Generate fill and outline buffers, where the outlines are built with triangle primitives
+ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
+@@ -42,7 +44,9 @@ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
+                                   gfx::IndexVector<gfx::Triangles>& lineIndexes,
+                                   SegmentVector& lineSegments,
+                                   gfx::IndexVector<gfx::Lines>& basicLineIndexes,
+-                                  SegmentVector& basicLineSegments);
++                                  SegmentVector& basicLineSegments,
++                                  const CanonicalTileID& canonical,
++                                  uint32_t subdivisionGranularity = 1);
+ 
+ } // namespace gfx
+ } // namespace mln
+diff --git a/include/mln/shaders/mtl/background.hpp b/include/mln/shaders/mtl/background.hpp
+index f79a7fe8fddf5b553ff3c6e0d97471d59e9d8ff6..bb270194d965d0b99ac56e113769a9a9d9c1f660 100644
+--- a/include/mln/shaders/mtl/background.hpp
++++ b/include/mln/shaders/mtl/background.hpp
+@@ -102,7 +102,7 @@ FragmentStage vertex vertexMain(VertexStage in [[stage_in]],
+     device const BackgroundDrawableUBO& drawable = drawableVector[uboIndex].backgroundDrawableUBO;
+ 
+     return {
+-        .position = projectTile(float2(in.position.xy), projectionVector[uboIndex])
++        .position = projectTile(float2(in.position.xy), float2(in.position.xy), projectionVector[uboIndex])
+     };
+ }
+ 
+@@ -160,7 +160,7 @@ FragmentStage vertex vertexMain(VertexStage in [[stage_in]],
+                                          drawable.tile_units_to_pixels,
+                                          pos);
+     return {
+-        .position = projectTile(float2(in.position.xy), projectionVector[uboIndex]),
++        .position = projectTile(float2(in.position.xy), float2(in.position.xy), projectionVector[uboIndex]),
+         .pos_a = pos_a,
+         .pos_b = pos_b,
+     };
+diff --git a/include/mln/shaders/mtl/common.hpp b/include/mln/shaders/mtl/common.hpp
+index 48638c3878502a74d57250698227e1fdeac7c84e..7bc5c2d43f3c024902a87b26f14aadf25c802ee8 100644
+--- a/include/mln/shaders/mtl/common.hpp
++++ b/include/mln/shaders/mtl/common.hpp
+@@ -238,7 +238,11 @@ struct alignas(16) ProjectionUBO {
+ };
+ static_assert(sizeof(ProjectionUBO) == 11 * 16, "wrong size");
+ 
+-#ifdef PROJECTION_GLOBE
++// Pole vertices carry these sentinel Y values in their raw position.
++#define GLOBE_POLE_NORTH_Y -32767.5
++#define GLOBE_POLE_SOUTH_Y 32766.5
++
++#if defined(PROJECTION_GLOBE)
+ 
+ #define GLOBE_RADIUS 6371008.8
+ 
+@@ -253,10 +257,10 @@ inline float3 projectToSphere(float2 translatedPos, float2 rawPos, device const
+     const float sin_sy = (t2 - 1.0) / denom;
+     const float cos_sy = (2.0 * t) / denom;
+     float3 pos = float3(sin(spherical_x) * cos_sy, sin_sy, cos(spherical_x) * cos_sy);
+-    if (rawPos.y < -32767.5) {
++    if (rawPos.y < GLOBE_POLE_NORTH_Y) {
+         pos = float3(0.0, 1.0, 0.0);
+     }
+-    if (rawPos.y > 32766.5) {
++    if (rawPos.y > GLOBE_POLE_SOUTH_Y) {
+         pos = float3(0.0, -1.0, 0.0);
+     }
+     return pos;
+@@ -283,7 +287,7 @@ inline float4 interpolateProjection(float2 posInTile, float3 spherePos, float el
+     float4 result = globePosition;
+     result.z = mix(0.0, globePosition.z, clamp((projection.projection_transition - z_globeness_threshold) / (1.0 - z_globeness_threshold), 0.0, 1.0));
+     result.xyw = mix(flatPosition.xyw, globePosition.xyw, projection.projection_transition);
+-    if ((posInTile.y < -32767.5) || (posInTile.y > 32766.5)) {
++    if ((posInTile.y < GLOBE_POLE_NORTH_Y) || (posInTile.y > GLOBE_POLE_SOUTH_Y)) {
+         result = globePosition;
+         const float poles_hidden_anim_percentage = 0.02;
+         result.z = mix(globePosition.z, 100.0, pow(max((1.0 - projection.projection_transition) / poles_hidden_anim_percentage, 0.0), 8.0));
+@@ -295,12 +299,26 @@ inline float4 projectTile(float2 pos, device const ProjectionUBO& projection) {
+     return interpolateProjection(pos, projectToSphere(pos, float2(0.0, 0.0), projection), 0.0, projection);
+ }
+ 
++// The variant for geometry that can carry pole vertices; rawPos is the untranslated position.
++inline float4 projectTile(float2 pos, float2 rawPos, device const ProjectionUBO& projection) {
++    return interpolateProjection(pos, projectToSphere(pos, rawPos, projection), 0.0, projection);
++}
++
+ #else
+ 
+ inline float4 projectTile(float2 pos, device const ProjectionUBO& projection) {
+     return projection.matrix * float4(pos, 0.0, 1.0);
+ }
+ 
++// Pole vertices only exist on the globe; put them behind the near plane so their triangles are clipped.
++inline float4 projectTile(float2 pos, float2 rawPos, device const ProjectionUBO& projection) {
++    float4 result = projection.matrix * float4(pos, 0.0, 1.0);
++    if (rawPos.y < GLOBE_POLE_NORTH_Y || rawPos.y > GLOBE_POLE_SOUTH_Y) {
++        result.z = -10000000.0;
++    }
++    return result;
++}
++
+ #endif
+ 
+ enum {
+diff --git a/include/mln/shaders/mtl/fill.hpp b/include/mln/shaders/mtl/fill.hpp
+index 9f30adbb6b34abf8b73846428550d22d7c809291..dbc4e59923625f372e6505f75f34be832da06518 100644
+--- a/include/mln/shaders/mtl/fill.hpp
++++ b/include/mln/shaders/mtl/fill.hpp
+@@ -191,7 +191,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+     device const FillDrawableUBO& drawable = drawableVector[uboIndex].fillDrawableUBO;
+ 
+     return {
+-        .position = projectTile(float2(vertx.position), projectionVector[uboIndex]),
++        .position = projectTile(float2(vertx.position), float2(vertx.position), projectionVector[uboIndex]),
+ #if !defined(HAS_UNIFORM_u_color)
+         .color    = half4(unpack_mix_color(vertx.color, drawable.color_t)),
+ #endif
+@@ -262,7 +262,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+ 
+     device const FillOutlineDrawableUBO& drawable = drawableVector[uboIndex].fillOutlineDrawableUBO;
+ 
+-    const float4 position = projectTile(float2(vertx.position), projectionVector[uboIndex]);
++    const float4 position = projectTile(float2(vertx.position), float2(vertx.position), projectionVector[uboIndex]);
+     return {
+         .position       = position,
+         .pos            = (position.xy / position.w + 1.0) / 2.0 * paintParams.world_size,
+@@ -391,7 +391,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+     const float2 postion = float2(vertx.position);
+ 
+     return {
+-        .position       = projectTile(postion, projectionVector[uboIndex]),
++        .position       = projectTile(postion, postion, projectionVector[uboIndex]),
+         .v_pos_a        = get_pattern_pos(drawable.pixel_coord_upper, drawable.pixel_coord_lower, fromScale * display_size_a, tileZoomRatio, postion),
+         .v_pos_b        = get_pattern_pos(drawable.pixel_coord_upper, drawable.pixel_coord_lower, toScale * display_size_b, tileZoomRatio, postion),
+ #if !defined(HAS_UNIFORM_u_color)
+@@ -561,7 +561,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+     const float2 display_size_a = float2((pattern_br_a.x - pattern_tl_a.x) / pixelRatio, (pattern_br_a.y - pattern_tl_a.y) / pixelRatio);
+     const float2 display_size_b = float2((pattern_br_b.x - pattern_tl_b.x) / pixelRatio, (pattern_br_b.y - pattern_tl_b.y) / pixelRatio);
+     const float2 pos2 = float2(vertx.position);
+-    const float4 position = projectTile(pos2, projectionVector[uboIndex]);
++    const float4 position = projectTile(pos2, pos2, projectionVector[uboIndex]);
+ 
+     return {
+         .position       = position,
+@@ -704,8 +704,8 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+     // Scale the extrusion vector down to a normal and then up by the line width of this vertex.
+     const float2 dist = outset * a_extrude * LINE_NORMAL_SCALE;
+ 
+-    const float4 projected_extrude = drawable.matrix * float4(dist / drawable.ratio, 0.0, 0.0);
+-    const float4 position = projectTile(pos, projectionVector[uboIndex]) + projected_extrude;
++    const float4 projected_extrude = projectionVector[uboIndex].fallback_matrix * float4(dist / drawable.ratio, 0.0, 0.0);
++    const float4 position = projectTile(pos, pos, projectionVector[uboIndex]) + projected_extrude;
+ 
+     // calculate how much the perspective view squishes or stretches the extrude
+     const float extrude_length_without_perspective = length(dist);
+diff --git a/include/mln/util/subdivision.hpp b/include/mln/util/subdivision.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a23dbc91f60d71723053df6e459dddfbae25b5c4
+--- /dev/null
++++ b/include/mln/util/subdivision.hpp
+@@ -0,0 +1,52 @@
++#pragma once
++
++#include <mln/tile/tile_id.hpp>
++#include <mln/tile/geometry_tile_data.hpp>
++
++#include <cstdint>
++#include <vector>
++
++namespace mln {
++namespace util {
++
++/// Pole vertices carry these Y coordinates; the globe vertex shader maps them to the poles.
++constexpr int16_t NORTH_POLE_Y = -32768;
++constexpr int16_t SOUTH_POLE_Y = 32767;
++
++struct SubdivisionResult {
++    /// Flattened `x, y, x, y, ...` positions; every index below refers into this buffer.
++    std::vector<int16_t> vertices;
++    std::vector<uint32_t> triangleIndices;
++    /// One line list per input ring, as index pairs.
++    std::vector<std::vector<uint32_t>> lineIndexLists;
++};
++
++/// Triangulates a polygon and splits the triangles on a grid of `granularity` cells per axis. Port of GL JS
++/// `render/subdivision.ts`: earcut, then a scanline pass per cell row, then pole quads on the pole tiles and
++/// removal of geometry outside the tile on zoom 0. Output triangles are counter-clockwise in tile space.
++SubdivisionResult subdividePolygon(const GeometryCollection& polygon,
++                                   const CanonicalTileID& canonical,
++                                   uint32_t granularity,
++                                   bool generateOutlineLines = true);
++
++/// `subdividePolygon` at the finest granularity whose result fits in `maxVertices` (the 16-bit index space of a
++/// segment), halving from `granularity` down to 2. A polygon that cannot fit even unsubdivided comes back as is.
++SubdivisionResult subdividePolygonWithinLimit(const GeometryCollection& polygon,
++                                              const CanonicalTileID& canonical,
++                                              uint32_t granularity,
++                                              bool generateOutlineLines,
++                                              std::size_t maxVertices);
++
++/// Inserts a vertex wherever the line crosses a cell boundary; `isRing` closes the line first.
++GeometryCoordinates subdivideVertexLine(const GeometryCoordinates& line, uint32_t granularity, bool isRing = false);
++
++/// Reorders every triangle to counter-clockwise winding in tile space.
++std::vector<uint32_t> fixWindingOrder(const std::vector<int16_t>& vertices, const std::vector<uint32_t>& indices);
++
++/// Triangulates an ordered convex ring of vertex indices by walking outward from its leftmost vertex.
++void scanlineTriangulateVertexRing(const std::vector<int16_t>& vertices,
++                                   const std::vector<uint32_t>& ring,
++                                   std::vector<uint32_t>& outIndices);
++
++} // namespace util
++} // namespace mln
+diff --git a/include/mln/util/subdivision_granularity.hpp b/include/mln/util/subdivision_granularity.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f5b51ff1f27893f314ff91744770d67b862f83f
+--- /dev/null
++++ b/include/mln/util/subdivision_granularity.hpp
+@@ -0,0 +1,49 @@
++#pragma once
++
++#include <algorithm>
++#include <cassert>
++#include <cstdint>
++
++namespace mln {
++
++/// How finely tile geometry is split so the vertex shader can bend it onto the globe; port of GL JS
++/// `subdivision_granularity_settings.ts`.
++class SubdivisionGranularityExpression {
++public:
++    constexpr SubdivisionGranularityExpression(uint32_t baseZoomGranularity_, uint32_t minGranularity_)
++        : baseZoomGranularity(baseZoomGranularity_),
++          minGranularity(minGranularity_) {
++        assert(minGranularity <= baseZoomGranularity || baseZoomGranularity == 0);
++    }
++
++    /// The base granularity halves with every zoom level, down to the minimum and never below 1.
++    uint32_t getGranularityForZoomLevel(uint8_t zoom) const {
++        return std::max({zoom < 32 ? baseZoomGranularity >> zoom : 0u, minGranularity, 1u});
++    }
++
++    bool operator==(const SubdivisionGranularityExpression&) const = default;
++
++private:
++    uint32_t baseZoomGranularity;
++    uint32_t minGranularity;
++};
++
++struct SubdivisionGranularitySetting {
++    SubdivisionGranularityExpression fill{0, 0};
++    SubdivisionGranularityExpression line{0, 0};
++    SubdivisionGranularityExpression tile{0, 0};
++    SubdivisionGranularityExpression stencil{0, 0};
++    /// Circle vertices per axis: 1, 3, 5 or 7.
++    uint8_t circle = 1;
++
++    bool operator==(const SubdivisionGranularitySetting&) const = default;
++
++    static constexpr SubdivisionGranularitySetting none() { return {}; }
++
++    /// GL JS's globe values.
++    static constexpr SubdivisionGranularitySetting globe() {
++        return {.fill = {128, 2}, .line = {512, 0}, .tile = {128, 32}, .stencil = {128, 1}, .circle = 3};
++    }
++};
++
++} // namespace mln
+diff --git a/include/mln/util/tile_mesh.hpp b/include/mln/util/tile_mesh.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0de0eef314b93ef48ec9f751d24c7dca6a114de
+--- /dev/null
++++ b/include/mln/util/tile_mesh.hpp
+@@ -0,0 +1,32 @@
++#pragma once
++
++#include <cstdint>
++#include <vector>
++
++namespace mln {
++namespace util {
++
++struct TileMeshOptions {
++    /// Quads per axis; 1 is the plain tile quad.
++    uint32_t granularity = 1;
++    /// Adds a ring of quads `EXTENT / 128` units outside the tile, for stencil masks.
++    bool generateBorders = false;
++    /// Replaces the north border with geometry reaching the north pole vertex.
++    bool extendToNorthPole = false;
++    bool extendToSouthPole = false;
++
++    bool operator==(const TileMeshOptions&) const = default;
++};
++
++struct TileMesh {
++    /// Flattened `x, y` pairs in tile units.
++    std::vector<int16_t> vertices;
++    std::vector<uint16_t> indices;
++};
++
++/// A grid mesh covering one tile, optionally with borders and pole caps; port of GL JS `util/create_tile_mesh.ts`.
++/// Triangles are counter-clockwise in tile space.
++TileMesh createTileMesh(const TileMeshOptions&);
++
++} // namespace util
++} // namespace mln
+diff --git a/metrics/ignores/platform-android-vulkan.json b/metrics/ignores/platform-android-vulkan.json
+index fbd5cc582a24307bb1f8295d2aa609141d297e93..69a797c64c24b55ba00e41933b8e2bd65c48d686 100644
+--- a/metrics/ignores/platform-android-vulkan.json
++++ b/metrics/ignores/platform-android-vulkan.json
+@@ -2,5 +2,8 @@
+   "render-tests/fill-extrusion-color/function": "Layer Z Fighting: https://github.com/maplibre/maplibre-native/issues/1847",
+   "render-tests/combinations/fill-opaque--image-translucent": "investigate",
+   "render-tests/projection/globe/fill-grid": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-grid-pitched": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
++  "render-tests/projection/globe/fill-grid-pitched": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
++  "render-tests/projection/globe/background": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
++  "render-tests/projection/globe/fill-planet-solid": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
++  "render-tests/projection/globe/fill-planet-tiles": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
+ }
+diff --git a/metrics/ignores/platform-android.json b/metrics/ignores/platform-android.json
+index 0687ff2023c56c6e8d3cd324c9c166b3731d91eb..3c43a6666224816c018fc4a2ef77f25ee0fb2f33 100644
+--- a/metrics/ignores/platform-android.json
++++ b/metrics/ignores/platform-android.json
+@@ -17,5 +17,8 @@
+     "render-tests/text-field/formatted-images": "Needs to be investigated and fixed.",
+     "render-tests/symbol-visibility/visible": "Needs to be investigated and fixed.",
+     "render-tests/projection/globe/fill-grid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++    "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/platform-linux-opengl.json b/metrics/ignores/platform-linux-opengl.json
+index 6ad409acb1e5336e07c52b2dd3e6798e079e691e..69871ee39872bc6180b71ec42e1df62a7f9fb3eb 100644
+--- a/metrics/ignores/platform-linux-opengl.json
++++ b/metrics/ignores/platform-linux-opengl.json
+@@ -1,4 +1,7 @@
+ {
+   "render-tests/projection/globe/fill-grid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-  "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++  "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++  "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++  "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++  "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/platform-linux-vulkan.json b/metrics/ignores/platform-linux-vulkan.json
+index bcbd44164020fc68a151f53b4e62d75cfe770daf..ead8ed15563d3867b7bb14305e421547c88659aa 100644
+--- a/metrics/ignores/platform-linux-vulkan.json
++++ b/metrics/ignores/platform-linux-vulkan.json
+@@ -2,6 +2,9 @@
+   "render-tests/fill-extrusion-color/function": "Layer Z Fighting: https://github.com/maplibre/maplibre-native/issues/1847",
+   "render-tests/tilejson-bounds/default": "flaky on CI",
+   "render-tests/icon-text-fit/textFit-grid-long": "Needs to be investigated",
++  "render-tests/projection/globe/fill-planet-tiles": "fill outline anti-aliasing differs from the Metal expectation",
+   "render-tests/projection/globe/fill-grid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
++  "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++  "render-tests/projection/globe/background": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++  "render-tests/projection/globe/fill-planet-solid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
+ }
+diff --git a/metrics/ignores/platform-macos-webgpu.json b/metrics/ignores/platform-macos-webgpu.json
+index d517e705df85ebda942ee77c5e8c554b18af4dbc..bec5d214f02993f15e0e384b3e64d186b3e292c3 100644
+--- a/metrics/ignores/platform-macos-webgpu.json
++++ b/metrics/ignores/platform-macos-webgpu.json
+@@ -14,5 +14,8 @@
+     "render-tests/fill-extrusion-pattern/opacity": "https://github.com/mapbox/mapbox-gl-js/issues/3327",
+     "render-tests/fill-extrusion-pattern/tile-buffer": "https://github.com/mapbox/mapbox-gl-js/issues/3327",
+     "render-tests/projection/globe/fill-grid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
++    "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/background": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/fill-planet-solid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/fill-planet-tiles": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
+ }
+diff --git a/metrics/ignores/windows-egl.json b/metrics/ignores/windows-egl.json
+index 2db14919475935f85b50bb08fea1f5115c570cca..e11d55cb70764d9aeea3c41682f610a701499105 100644
+--- a/metrics/ignores/windows-egl.json
++++ b/metrics/ignores/windows-egl.json
+@@ -7,5 +7,8 @@
+     "render-tests/runtime-styling/image-update-pattern": "Needs investigation (Diff: 0.001953125)",
+     "render-tests/sprites/2x-screen-2x-pattern": "Needs investigation (Diff: 0.00042724609375)",
+     "render-tests/projection/globe/fill-grid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++    "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/windows-opengl.json b/metrics/ignores/windows-opengl.json
+index fd3c80b46eb79a94866f4e375f28d6570c36f210..800a552d895425b59016b3a5eaf86cc67778ceef 100644
+--- a/metrics/ignores/windows-opengl.json
++++ b/metrics/ignores/windows-opengl.json
+@@ -7,5 +7,8 @@
+     "render-tests/runtime-styling/image-update-pattern": "Needs investigation (Diff: 0.001953125)",
+     "render-tests/sprites/2x-screen-2x-pattern": "Needs investigation (Diff: 0.00042724609375)",
+     "render-tests/projection/globe/fill-grid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++    "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/windows-vulkan.json b/metrics/ignores/windows-vulkan.json
+index 3d60cc91916515d69981c3b369260985ad203857..a331e0d6e8f39a8676820d29687d0512ef15896c 100644
+--- a/metrics/ignores/windows-vulkan.json
++++ b/metrics/ignores/windows-vulkan.json
+@@ -4,6 +4,9 @@
+     "render-tests/icon-text-fit/textFit-grid-long": "Needs investigation (Diff: 0.00507716049382716)",
+     "render-tests/regressions/mapbox-gl-js#5642": "Needs investigation (Diff: 0.01416015625)",
+     "render-tests/regressions/mapbox-gl-js#7066": "Needs investigation (Diff: 0.0002777777777777778)",
++    "render-tests/projection/globe/fill-planet-tiles": "fill outline anti-aliasing differs from the Metal expectation",
+     "render-tests/projection/globe/fill-grid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
++    "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/background": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/fill-planet-solid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
+ }
+diff --git a/metrics/integration/render-tests/projection/globe/background/expected.png b/metrics/integration/render-tests/projection/globe/background/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..a61cf82f60a55352b265353bb5df8090f9727895
+GIT binary patch
+literal 2466
+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
+X52n|Cj=kSA+c))MN#Woo^ZtJUw1PpO
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/integration/render-tests/projection/globe/background/style.json b/metrics/integration/render-tests/projection/globe/background/style.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..86503df1c8e6117bf2ef2865cf7580e5019f5cad
+--- /dev/null
++++ b/metrics/integration/render-tests/projection/globe/background/style.json
+@@ -0,0 +1,20 @@
++{
++  "version": 8,
++  "metadata": {
++    "test": {
++      "width": 512,
++      "height": 512
++    }
++  },
++  "center": [0.0, 0.0],
++  "zoom": 1,
++  "sources": {},
++  "projection": {"type": "globe"},
++  "layers": [
++    {
++      "id": "background",
++      "type": "background",
++      "paint": {"background-color": "green"}
++    }
++  ]
++}
+diff --git a/metrics/integration/render-tests/projection/globe/fill-grid-pitched/expected.png b/metrics/integration/render-tests/projection/globe/fill-grid-pitched/expected.png
+index 6fb787fe1cd3c7c409d1d3260eb4b7c7cb5aecc6..56d87cadfb2ee066a64eace36355d74cae790d86 100644
+GIT binary patch
+literal 12369
+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
+LUM63<_2~ZqSay2w
+
+literal 12644
+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
+
+diff --git a/metrics/integration/render-tests/projection/globe/fill-grid/expected.png b/metrics/integration/render-tests/projection/globe/fill-grid/expected.png
+index ec349070915d5cc22eaa2da914e01849053d8722..b82a7b5a7bdb515f1c703c0659b7e2a334e7e177 100644
+GIT binary patch
+literal 11428
+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
+S*KM*;PuQNesW^7-#{UD$+0(}W
+
+literal 11592
+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
+
+diff --git a/metrics/integration/render-tests/projection/globe/fill-planet-solid/expected.png b/metrics/integration/render-tests/projection/globe/fill-planet-solid/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..29029614079d688c7c194a3b9baf5de897ea672b
+GIT binary patch
+literal 2466
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/integration/render-tests/projection/globe/fill-planet-solid/style.json b/metrics/integration/render-tests/projection/globe/fill-planet-solid/style.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..74209f251b809fee26bab7377182901e3e0f467e
+--- /dev/null
++++ b/metrics/integration/render-tests/projection/globe/fill-planet-solid/style.json
+@@ -0,0 +1,34 @@
++{
++  "version": 8,
++  "metadata": {
++    "test": {
++      "width": 512,
++      "height": 512
++    }
++  },
++  "center": [0.0, 0.0],
++  "zoom": 1,
++  "projection": {"type": "globe"},
++  "sources": {
++    "geojson": {
++      "type": "geojson",
++      "data": {
++        "type": "Polygon",
++        "coordinates": [[[-180, -90], [-180, 90], [180, 90], [180, -90], [-180, -90]]]
++      }
++    }
++  },
++  "layers": [
++    {
++      "id": "background",
++      "type": "background",
++      "paint": {"background-color": "white"}
++    },
++    {
++      "id": "fill",
++      "type": "fill",
++      "source": "geojson",
++      "paint": {"fill-antialias": false, "fill-color": "#0000ff"}
++    }
++  ]
++}
+diff --git a/metrics/integration/render-tests/projection/globe/fill-planet-tiles/expected.png b/metrics/integration/render-tests/projection/globe/fill-planet-tiles/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d741c3d9ebdbf4dfc39f303d5309ea3f4eb40a6
+GIT binary patch
+literal 15860
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/integration/render-tests/projection/globe/fill-planet-tiles/style.json b/metrics/integration/render-tests/projection/globe/fill-planet-tiles/style.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..a05aa7457d19ccac0534e19899cb4fd0f62858df
+--- /dev/null
++++ b/metrics/integration/render-tests/projection/globe/fill-planet-tiles/style.json
+@@ -0,0 +1,33 @@
++{
++  "version": 8,
++  "metadata": {
++    "test": {
++      "width": 512,
++      "height": 512
++    }
++  },
++  "center": [0.0, 0.0],
++  "zoom": 2,
++  "projection": {"type": "globe"},
++  "sources": {
++    "vector_tiles": {
++      "type": "vector",
++      "maxzoom": 0,
++      "tiles": ["local://tiles/{z}-{x}-{y}.mvt"]
++    }
++  },
++  "layers": [
++    {
++      "id": "background",
++      "type": "background",
++      "paint": {"background-color": "white"}
++    },
++    {
++      "id": "land",
++      "type": "fill",
++      "source": "vector_tiles",
++      "source-layer": "water",
++      "paint": {"fill-color": "blue"}
++    }
++  ]
++}
+diff --git a/src/mln/gfx/fill_generator.cpp b/src/mln/gfx/fill_generator.cpp
+index 4a890cd1a7b6e573accb8cd02fdffdca3dc506a8..a0375ad6bbb9920ce733bdc23a9054ee237bd839 100644
+--- a/src/mln/gfx/fill_generator.cpp
++++ b/src/mln/gfx/fill_generator.cpp
+@@ -1,5 +1,6 @@
+ #include <mln/gfx/fill_generator.hpp>
+ #include <mln/gfx/polyline_generator.hpp>
++#include <mln/util/subdivision.hpp>
+ 
+ #ifdef _MSC_VER
+ #pragma warning(push)
+@@ -104,6 +105,42 @@ void addOutlineIndices(const std::size_t base,
+     lineSegment.indexLength += nVertices * 2;
+ }
+ 
++void addSubdividedPolygon(const util::SubdivisionResult& subdivided,
++                          gfx::VertexVector<FillLayoutVertex>& fillVertices,
++                          gfx::IndexVector<gfx::Triangles>& fillIndexes,
++                          SegmentVector& fillSegments,
++                          gfx::IndexVector<gfx::Lines>& lineIndexes,
++                          SegmentVector& lineSegments) {
++    const std::size_t totalVertices = subdivided.vertices.size() / 2;
++    if (totalVertices > maxSegmentVertices) {
++        throw GeometryTooLongException();
++    }
++    const std::size_t startVertices = fillVertices.elements();
++    for (std::size_t i = 0; i < totalVertices; i++) {
++        fillVertices.emplace_back(
++            FillBucket::layoutVertex({subdivided.vertices[i * 2], subdivided.vertices[i * 2 + 1]}));
++    }
++    addFillIndices(fillSegments, fillIndexes, subdivided.triangleIndices, startVertices, totalVertices);
++
++    for (const auto& line : subdivided.lineIndexLists) {
++        if (line.empty()) {
++            continue;
++        }
++        if (lineSegments.empty() || lineSegments.back().vertexLength + totalVertices > maxSegmentVertices) {
++            lineSegments.emplace_back(startVertices, lineIndexes.elements());
++        }
++        auto& lineSegment = lineSegments.back();
++        const auto base = static_cast<uint16_t>(lineSegment.vertexLength);
++        for (std::size_t i = 0; i + 1 < line.size(); i += 2) {
++            lineIndexes.emplace_back(static_cast<uint16_t>(base + line[i]), static_cast<uint16_t>(base + line[i + 1]));
++        }
++        lineSegment.indexLength += line.size();
++    }
++    if (!lineSegments.empty()) {
++        lineSegments.back().vertexLength += totalVertices;
++    }
++}
++
+ } // namespace
+ 
+ void generateFillBuffers(const GeometryCollection& geometry,
+@@ -131,11 +168,27 @@ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
+                                   gfx::IndexVector<gfx::Triangles>& fillIndexes,
+                                   SegmentVector& fillSegments,
+                                   gfx::IndexVector<gfx::Lines>& lineIndexes,
+-                                  SegmentVector& lineSegments) {
++                                  SegmentVector& lineSegments,
++                                  const CanonicalTileID& canonical,
++                                  uint32_t subdivisionGranularity) {
+     for (auto& polygon : classifyRings(geometry)) {
+         // Optimize polygons with many interior rings for earcut tessellation.
+         limitHoles(polygon, 500);
+ 
++        if (subdivisionGranularity >= 2) {
++            addSubdividedPolygon(util::subdividePolygonWithinLimit(polygon,
++                                                                   canonical,
++                                                                   subdivisionGranularity,
++                                                                   /*generateOutlineLines=*/true,
++                                                                   maxSegmentVertices),
++                                 vertices,
++                                 fillIndexes,
++                                 fillSegments,
++                                 lineIndexes,
++                                 lineSegments);
++            continue;
++        }
++
+         std::size_t totalVertices = totalVerticesCheck(polygon);
+         std::size_t startVertices = vertices.elements();
+ 
+@@ -195,7 +248,9 @@ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
+                                   gfx::IndexVector<gfx::Triangles>& lineIndexes,
+                                   SegmentVector& lineSegments,
+                                   gfx::IndexVector<gfx::Lines>& basicLineIndexes,
+-                                  SegmentVector& basicLineSegments) {
++                                  SegmentVector& basicLineSegments,
++                                  const CanonicalTileID& canonical,
++                                  uint32_t subdivisionGranularity) {
+     gfx::PolylineGenerator<LineLayoutVertex, SegmentBase> lineGenerator(
+         lineVertices,
+         LineBucket::layoutVertex,
+@@ -226,6 +281,24 @@ void generateFillAndOutineBuffers(const GeometryCollection& geometry,
+         // Optimize polygons with many interior rings for earcut tessellation.
+         limitHoles(polygon, 500);
+ 
++        if (subdivisionGranularity >= 2) {
++            for (const auto& ring : polygon) {
++                lineGenerator.generate(util::subdivideVertexLine(ring, subdivisionGranularity, /*isRing=*/true),
++                                       lineOptions);
++            }
++            addSubdividedPolygon(util::subdividePolygonWithinLimit(polygon,
++                                                                   canonical,
++                                                                   subdivisionGranularity,
++                                                                   /*generateOutlineLines=*/true,
++                                                                   maxSegmentVertices),
++                                 fillVertices,
++                                 fillIndexes,
++                                 fillSegments,
++                                 basicLineIndexes,
++                                 basicLineSegments);
++            continue;
++        }
++
+         const std::size_t totalVertices = totalVerticesCheck(polygon);
+         const std::size_t startVertices = fillVertices.elements();
+ 
+diff --git a/src/mln/layout/pattern_layout.hpp b/src/mln/layout/pattern_layout.hpp
+index 14cfa79e78b75d49c053c0a20847c8c3e4297a07..74aab5e29d9a917a80e14f76e5498280576900b7 100644
+--- a/src/mln/layout/pattern_layout.hpp
++++ b/src/mln/layout/pattern_layout.hpp
+@@ -96,6 +96,7 @@ public:
+         : sourceLayer(std::move(sourceLayer_)),
+           zoom(parameters.tileID.overscaledZ),
+           overscaling(parameters.tileID.overscaleFactor()),
++          subdivisionGranularity(parameters.subdivisionGranularity),
+           hasPattern(false),
+           retainFeaturesById(parameters.retainFeaturesById) {
+         assert(!group.empty());
+@@ -191,6 +192,9 @@ public:
+                       const bool /*showCollisionBoxes*/,
+                       const CanonicalTileID& canonical) override {
+         auto bucket = std::make_shared<BucketType>(layout, layerPropertiesMap, zoom, overscaling);
++        if constexpr (requires(BucketType& b) { b.setSubdivisionGranularity(subdivisionGranularity); }) {
++            bucket->setSubdivisionGranularity(subdivisionGranularity);
++        }
+         bucket->setRetainFeaturesById(retainFeaturesById);
+         bucket->reserveFeatures(features.size());
+ 
+@@ -243,6 +247,7 @@ protected:
+ 
+     const float zoom;
+     const uint32_t overscaling;
++    const SubdivisionGranularitySetting subdivisionGranularity;
+     std::string sourceLayerID;
+     bool hasPattern;
+     bool retainFeaturesById = false;
+diff --git a/src/mln/renderer/bucket_parameters.hpp b/src/mln/renderer/bucket_parameters.hpp
+index d932ab2717c298749e7b5ea2115c41a4f496fa0c..cbca8656dcc06f210b5176ec276fac0d654daf88 100644
+--- a/src/mln/renderer/bucket_parameters.hpp
++++ b/src/mln/renderer/bucket_parameters.hpp
+@@ -4,6 +4,7 @@
+ #include <mln/renderer/bucket.hpp>
+ #include <mln/tile/tile_id.hpp>
+ #include <mln/util/feature.hpp>
++#include <mln/util/subdivision_granularity.hpp>
+ 
+ #include <memory>
+ 
+@@ -21,6 +22,7 @@ public:
+     // The style's global state, used by "global-state" expressions.
+     std::shared_ptr<const GlobalStateMap> globalState = nullptr;
+     const bool retainFeaturesById = false;
++    const SubdivisionGranularitySetting subdivisionGranularity{};
+ };
+ 
+ } // namespace mln
+diff --git a/src/mln/renderer/buckets/fill_bucket.cpp b/src/mln/renderer/buckets/fill_bucket.cpp
+index 287f9766ee56a036ac4faa434fe9cb1677403c33..75ef6736b7163bbccbea179edc9e214e6af863ce 100644
+--- a/src/mln/renderer/buckets/fill_bucket.cpp
++++ b/src/mln/renderer/buckets/fill_bucket.cpp
+@@ -49,9 +49,18 @@ void FillBucket::generateBuffers(const GeometryCollection& geometry) {
+                                       lineIndexes,
+                                       lineSegments,
+                                       basicLines,
+-                                      basicLineSegments);
++                                      basicLineSegments,
++                                      canonical,
++                                      subdivisionGranularity.fill.getGranularityForZoomLevel(canonical.z));
+ #else
+-    gfx::generateFillAndOutineBuffers(geometry, vertices, triangles, triangleSegments, basicLines, basicLineSegments);
++    gfx::generateFillAndOutineBuffers(geometry,
++                                      vertices,
++                                      triangles,
++                                      triangleSegments,
++                                      basicLines,
++                                      basicLineSegments,
++                                      canonical,
++                                      subdivisionGranularity.fill.getGranularityForZoomLevel(canonical.z));
+ #endif
+ }
+ 
+@@ -79,7 +88,7 @@ void FillBucket::addFeature(const GeometryTileFeature& feature,
+                             const CanonicalTileID& canonical) {
+     const auto vertexOffset = vertices.elements();
+ 
+-    generateBuffers(geometry);
++    generateBuffers(geometry, canonical);
+     populateBinders(feature, patternPositions, patternDependencies, index, canonical);
+ 
+     if (retainFeaturesById) {
+diff --git a/src/mln/renderer/buckets/fill_bucket.hpp b/src/mln/renderer/buckets/fill_bucket.hpp
+index f11a3462a10fa3c5236490088796e54b8f3a43b9..06dc7509c1d5c7f9f87760040b599cc0a4a4d378 100644
+--- a/src/mln/renderer/buckets/fill_bucket.hpp
++++ b/src/mln/renderer/buckets/fill_bucket.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <mln/renderer/bucket.hpp>
++#include <mln/util/subdivision_granularity.hpp>
+ #include <mln/renderer/paint_property_binder.hpp>
+ #include <mln/tile/geometry_tile_data.hpp>
+ #include <mln/gfx/vertex_buffer.hpp>
+@@ -30,6 +31,8 @@ using FillLayoutVertex = gfx::Vertex<TypeList<attributes::pos>>;
+ class FillBucket final : public Bucket {
+ public:
+     ~FillBucket() override;
++
++    void setSubdivisionGranularity(const SubdivisionGranularitySetting& value) { subdivisionGranularity = value; }
+     using PossiblyEvaluatedLayoutProperties = style::FillLayoutProperties::PossiblyEvaluated;
+ 
+     FillBucket(const PossiblyEvaluatedLayoutProperties& layout,
+@@ -84,11 +87,12 @@ public:
+     TriangleIndexVector& triangles = *sharedTriangles;
+ 
+     SegmentVector triangleSegments;
++    SubdivisionGranularitySetting subdivisionGranularity;
+ 
+     std::map<std::string, FillBinders> paintPropertyBinders;
+ 
+ private:
+-    void generateBuffers(const GeometryCollection&);
++    void generateBuffers(const GeometryCollection&, const CanonicalTileID&);
+     void populateBinders(const GeometryTileFeature&,
+                          const ImagePositions&,
+                          const PatternLayerMap&,
+diff --git a/src/mln/renderer/buckets/line_bucket.cpp b/src/mln/renderer/buckets/line_bucket.cpp
+index 18b1cd34072b52101373e9de9275cbe53689a6a6..3057344b2cd02b27dc7fb6488ad4329e265dbfac 100644
+--- a/src/mln/renderer/buckets/line_bucket.cpp
++++ b/src/mln/renderer/buckets/line_bucket.cpp
+@@ -1,4 +1,5 @@
+ #include <mln/renderer/buckets/line_bucket.hpp>
++#include <mln/util/subdivision.hpp>
+ #include <mln/renderer/bucket_parameters.hpp>
+ #include <mln/style/layers/line_layer_impl.hpp>
+ #include <mln/util/math.hpp>
+@@ -59,13 +60,19 @@ void LineBucket::addFeature(const GeometryTileFeature& feature,
+     }
+ }
+ 
+-void LineBucket::addGeometry(const GeometryCoordinates& coordinates,
++void LineBucket::addGeometry(const GeometryCoordinates& inputCoordinates,
+                              const GeometryTileFeature& feature,
+                              const CanonicalTileID& canonical) {
+     // Ignore empty coordinates.
+-    if (coordinates.empty()) {
++    if (inputCoordinates.empty()) {
+         return;
+     }
++    const uint32_t granularity = subdivisionGranularity.line.getGranularityForZoomLevel(canonical.z);
++    GeometryCoordinates subdivided;
++    if (granularity >= 2) {
++        subdivided = util::subdivideVertexLine(inputCoordinates, granularity);
++    }
++    const GeometryCoordinates& coordinates = granularity >= 2 ? subdivided : inputCoordinates;
+     gfx::PolylineGenerator<LineLayoutVertex, SegmentBase> generator(
+         vertices,
+         LineBucket::layoutVertex,
+diff --git a/src/mln/renderer/buckets/line_bucket.hpp b/src/mln/renderer/buckets/line_bucket.hpp
+index 10635ccb09567aa4e78a448797463c8e81c231f1..f5e0a961fea2b8318e04380eb8a2ffe6f33c0d53 100644
+--- a/src/mln/renderer/buckets/line_bucket.hpp
++++ b/src/mln/renderer/buckets/line_bucket.hpp
+@@ -2,6 +2,7 @@
+ #include <mln/gfx/index_buffer.hpp>
+ #include <mln/gfx/vertex_buffer.hpp>
+ #include <mln/renderer/bucket.hpp>
++#include <mln/util/subdivision_granularity.hpp>
+ #include <mln/renderer/paint_property_binder.hpp>
+ #include <mln/shaders/segment.hpp>
+ #include <mln/style/image_impl.hpp>
+@@ -25,6 +26,8 @@ public:
+                uint32_t overscaling);
+     ~LineBucket() override;
+ 
++    void setSubdivisionGranularity(const SubdivisionGranularitySetting& value) { subdivisionGranularity = value; }
++
+     void addFeature(const GeometryTileFeature&,
+                     const GeometryCollection&,
+                     const mln::ImagePositions& patternPositions,
+@@ -99,6 +102,7 @@ private:
+ 
+     const float zoom;
+     const uint32_t overscaling;
++    SubdivisionGranularitySetting subdivisionGranularity;
+ };
+ 
+ } // namespace mln
+diff --git a/src/mln/renderer/globe_tile_mesh.hpp b/src/mln/renderer/globe_tile_mesh.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..56853f7d4eb3d10277de8528c48396852d09d0ad
+--- /dev/null
++++ b/src/mln/renderer/globe_tile_mesh.hpp
+@@ -0,0 +1,71 @@
++#pragma once
++
++#include <mln/gfx/index_vector.hpp>
++#include <mln/gfx/vertex_vector.hpp>
++#include <mln/renderer/render_static_data.hpp>
++#include <mln/tile/tile_id.hpp>
++#include <mln/util/constants.hpp>
++#include <mln/util/subdivision_granularity.hpp>
++#include <mln/util/tile_mesh.hpp>
++
++#include <algorithm>
++#include <cstdint>
++#include <cstring>
++#include <memory>
++#include <vector>
++
++namespace mln {
++
++/// The pole-capped globe grid for a tile, as position + texture-position vertices; texture positions stay inside
++/// the tile so the pole rows sample the tile's edge. `layoutVertex(Point<int16_t>, Point<uint16_t>)` is the bucket's.
++template <typename Vertex, typename LayoutVertexFn>
++struct GlobeTileMesh {
++    std::shared_ptr<gfx::VertexVector<Vertex>> vertices;
++    std::shared_ptr<gfx::IndexVector<gfx::Triangles>> indices;
++    SegmentVector segments;
++
++    GlobeTileMesh(const CanonicalTileID& canonical, LayoutVertexFn layoutVertex)
++        : vertices(std::make_shared<gfx::VertexVector<Vertex>>()),
++          indices(std::make_shared<gfx::IndexVector<gfx::Triangles>>()) {
++        const util::TileMesh mesh = util::createTileMesh(
++            {.granularity = SubdivisionGranularitySetting::globe().tile.getGranularityForZoomLevel(canonical.z),
++             .generateBorders = false,
++             .extendToNorthPole = canonical.y == 0,
++             .extendToSouthPole = canonical.y == (1u << canonical.z) - 1});
++        for (std::size_t i = 0; i + 1 < mesh.vertices.size(); i += 2) {
++            const Point<int16_t> position{mesh.vertices[i], mesh.vertices[i + 1]};
++            const Point<uint16_t> texture{static_cast<uint16_t>(std::clamp<int32_t>(position.x, 0, util::EXTENT)),
++                                          static_cast<uint16_t>(std::clamp<int32_t>(position.y, 0, util::EXTENT))};
++            vertices->emplace_back(layoutVertex(position, texture));
++        }
++        for (std::size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
++            indices->emplace_back(mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]);
++        }
++        segments.emplace_back(0, 0, vertices->elements(), indices->elements());
++    }
++};
++
++/// The same grid as raw `Short2` positions, for drawables built from raw vertex bytes.
++struct RawGlobeTileMesh {
++    std::vector<std::uint8_t> vertices;
++    std::size_t vertexCount = 0;
++    std::vector<uint16_t> indices;
++    SegmentVector segments;
++};
++
++inline RawGlobeTileMesh rawGlobeTileMesh(const CanonicalTileID& canonical, bool generateBorders) {
++    const util::TileMesh mesh = util::createTileMesh(
++        {.granularity = SubdivisionGranularitySetting::globe().tile.getGranularityForZoomLevel(canonical.z),
++         .generateBorders = generateBorders,
++         .extendToNorthPole = canonical.y == 0,
++         .extendToSouthPole = canonical.y == (1u << canonical.z) - 1});
++    RawGlobeTileMesh raw;
++    raw.vertices.resize(mesh.vertices.size() * sizeof(int16_t));
++    std::memcpy(raw.vertices.data(), mesh.vertices.data(), raw.vertices.size());
++    raw.vertexCount = mesh.vertices.size() / 2;
++    raw.indices.assign(mesh.indices.begin(), mesh.indices.end());
++    raw.segments.emplace_back(0, 0, raw.vertexCount, raw.indices.size());
++    return raw;
++}
++
++} // namespace mln
+diff --git a/src/mln/renderer/layers/render_background_layer.cpp b/src/mln/renderer/layers/render_background_layer.cpp
+index fed5976afa5ce3ca2cf48f25acc7c6689d8a0dd1..e0816c1909e3494072808f80a2e8e0bad3de5f43 100644
+--- a/src/mln/renderer/layers/render_background_layer.cpp
++++ b/src/mln/renderer/layers/render_background_layer.cpp
+@@ -1,4 +1,7 @@
+ #include <mln/renderer/layers/render_background_layer.hpp>
++#include <mln/util/logging.hpp>
++#include <mln/util/subdivision_granularity.hpp>
++#include <mln/renderer/globe_tile_mesh.hpp>
+ #include <mln/gfx/context.hpp>
+ #include <mln/gfx/cull_face_mode.hpp>
+ #include <mln/map/transform_state.hpp>
+@@ -12,7 +15,6 @@
+ #include <mln/style/layer_properties.hpp>
+ #include <mln/util/tile_cover.hpp>
+ #include <mln/util/convert.hpp>
+-#include <mln/util/logging.hpp>
+ 
+ #include <mln/renderer/layers/background_layer_tweaker.hpp>
+ #include <mln/gfx/drawable_builder.hpp>
+@@ -230,10 +232,17 @@ void RenderBackgroundLayer::update(gfx::ShaderRegistry& shaders,
+                                                                         : gfx::ColorMode::unblended());
+         }
+ 
+-        auto verticesCopy = rawVertices;
+         builder->setVertexAttrId(idBackgroundPosVertexAttribute);
+-        builder->setRawVertices(std::move(verticesCopy), vertexCount, gfx::AttributeDataType::Short2);
+-        builder->setSegments(gfx::Triangles(), indexes.vector(), segs.data(), segs.size());
++        if (projectionVariant == gfx::ProjectionVariant::Globe) {
++            // The background is not depth tested, so it needs no tile border.
++            auto mesh = rawGlobeTileMesh(tileID.canonical, false);
++            builder->setRawVertices(std::move(mesh.vertices), mesh.vertexCount, gfx::AttributeDataType::Short2);
++            builder->setSegments(gfx::Triangles(), std::move(mesh.indices), mesh.segments.data(), mesh.segments.size());
++        } else {
++            auto verticesCopy = rawVertices;
++            builder->setRawVertices(std::move(verticesCopy), vertexCount, gfx::AttributeDataType::Short2);
++            builder->setSegments(gfx::Triangles(), indexes.vector(), segs.data(), segs.size());
++        }
+         builder->flush(context);
+ 
+         for (auto& drawable : builder->clearDrawables()) {
+diff --git a/src/mln/renderer/paint_parameters.cpp b/src/mln/renderer/paint_parameters.cpp
+index cbb58b1d4bf1aeb113df3922e7c24db0c77ba694..9ede0389bcf16c971b7f157140aade33054200bb 100644
+--- a/src/mln/renderer/paint_parameters.cpp
++++ b/src/mln/renderer/paint_parameters.cpp
+@@ -121,7 +121,8 @@ ProjectionData PaintParameters::projectionDataForTile(const UnwrappedTileID& til
+ }
+ 
+ gfx::DepthMode PaintParameters::depthModeForSublayer([[maybe_unused]] uint8_t n, gfx::DepthMaskType mask) const {
+-    if (currentLayer < opaquePassCutoff) {
++    // On the globe, 2D layers are ordered by draw order alone; their Z is the back-hemisphere clip.
++    if (currentLayer < opaquePassCutoff || state.isGlobeRendering()) {
+         return gfx::DepthMode::disabled();
+     }
+ 
+diff --git a/src/mln/renderer/render_orchestrator.cpp b/src/mln/renderer/render_orchestrator.cpp
+index 07056b00bb84553702a4fa4957dac069631d69ad..5aecf2a515ac7f1cc9d07d7cd9726daa94b4591f 100644
+--- a/src/mln/renderer/render_orchestrator.cpp
++++ b/src/mln/renderer/render_orchestrator.cpp
+@@ -459,7 +459,9 @@ std::unique_ptr<RenderTree> RenderOrchestrator::createRenderTree(
+ 
+             // Handle layers without source.
+             if (layerIsVisible && zoomFitsLayer && sourceImpl.get() == sourceImpls->at(0).get()) {
+-                if (backgroundLayerAsColor && layer.baseImpl == layerImpls->front()) {
++                // On the globe the background is a sphere mesh, not the backdrop, so it stays a layer.
++                if (backgroundLayerAsColor && !updateParameters->transformState.isGlobeRendering() &&
++                    layer.baseImpl == layerImpls->front()) {
+                     const auto& solidBackground = layer.getSolidBackground();
+                     if (solidBackground) {
+                         renderTreeParameters->backgroundColor = *solidBackground;
+diff --git a/src/mln/renderer/renderer_impl.cpp b/src/mln/renderer/renderer_impl.cpp
+index 959ef83de65bfd05346666ce359a2f48dfcce719..d6cbe86b38b87c29c90195e15c6154a411e6b7dd 100644
+--- a/src/mln/renderer/renderer_impl.cpp
++++ b/src/mln/renderer/renderer_impl.cpp
+@@ -390,12 +390,23 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
+         parameters.depthRangeSize = 1 - (orchestrator.numLayerGroups() + 2) * PaintParameters::numSublayers *
+                                             PaintParameters::depthEpsilon;
+ 
+-        // draw layer groups, opaque pass
+-        parameters.currentLayer = 0;
+-        orchestrator.visitLayerGroupsReversed([&](LayerGroupBase& layerGroup) {
+-            layerGroup.render(orchestrator, parameters);
+-            parameters.currentLayer++;
+-        });
++        // draw layer groups, opaque pass: front to back with the depth buffer, except on the globe,
++        // where 2D layers carry no depth and are painted bottom to top.
++        if (renderTreeParameters.transformParams.state.isGlobeRendering()) {
++            parameters.currentLayer = static_cast<uint32_t>(orchestrator.numLayerGroups()) - 1;
++            orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroup) {
++                layerGroup.render(orchestrator, parameters);
++                if (parameters.currentLayer > 0) {
++                    parameters.currentLayer--;
++                }
++            });
++        } else {
++            parameters.currentLayer = 0;
++            orchestrator.visitLayerGroupsReversed([&](LayerGroupBase& layerGroup) {
++                layerGroup.render(orchestrator, parameters);
++                parameters.currentLayer++;
++            });
++        }
+     };
+ 
+     const auto drawableTranslucentPass = [&] {
+diff --git a/src/mln/renderer/tile_pyramid.cpp b/src/mln/renderer/tile_pyramid.cpp
+index a45781207b0e290075d0b1016298e3fcaf11d340..8a18c3b262811a86d432e70b439c4a23077379d8 100644
+--- a/src/mln/renderer/tile_pyramid.cpp
++++ b/src/mln/renderer/tile_pyramid.cpp
+@@ -55,13 +55,19 @@ const Tile* TilePyramid::getRenderedTile(const UnwrappedTileID& tileID) const {
+ 
+ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& layers,
+                          const bool needsRendering,
+-                         const bool needsRelayout,
++                         const bool needsRelayoutForLayers,
+                          const TileParameters& parameters,
+                          const style::Source::Impl& sourceImpl,
+                          const uint16_t tileSize,
+                          const Range<uint8_t> zoomRange,
+                          std::optional<LatLngBounds> bounds,
+                          std::function<std::unique_ptr<Tile>(const OverscaledTileID&, TileObserver*)> createTile) {
++    const bool globeRendering = parameters.transformState.isGlobeRendering();
++    const auto subdivisionGranularity = globeRendering ? SubdivisionGranularitySetting::globe()
++                                                       : SubdivisionGranularitySetting::none();
++    const bool needsRelayout = needsRelayoutForLayers || globeRendering != lastGlobeRendering;
++    lastGlobeRendering = globeRendering;
++
+     // If we need a relayout, abandon any cached tiles; they're now stale.
+     if (needsRelayout) {
+         cache.clear();
+@@ -164,6 +170,7 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
+         }
+ 
+         if (needsRelayout) {
++            tile.setSubdivisionGranularity(subdivisionGranularity);
+             tile.setLayers(layers, parameters.globalState);
+         }
+     };
+@@ -190,6 +197,7 @@ void TilePyramid::update(const std::vector<Immutable<style::LayerProperties>>& l
+         if (!tile) {
+             tile = createTile(tileID, observer);
+             if (!tile) return nullptr;
++            tile->setSubdivisionGranularity(subdivisionGranularity);
+             tile->setLayers(layers, parameters.globalState);
+         }
+ 
+diff --git a/src/mln/renderer/tile_pyramid.hpp b/src/mln/renderer/tile_pyramid.hpp
+index 56eda6aeb0aea358eab9eec78907da829026d783..aae2c993224059c74611d0113e5ef5e7e0732f25 100644
+--- a/src/mln/renderer/tile_pyramid.hpp
++++ b/src/mln/renderer/tile_pyramid.hpp
+@@ -78,6 +78,7 @@ private:
+ 
+     std::map<OverscaledTileID, std::unique_ptr<Tile>> tiles;
+     TileCache cache;
++    bool lastGlobeRendering = false;
+ 
+     std::map<UnwrappedTileID, std::reference_wrapper<Tile>> renderedTiles; // Sorted by tile id.
+     TileObserver* observer = nullptr;
+diff --git a/src/mln/shaders/segment.hpp b/src/mln/shaders/segment.hpp
+index cfd36102ad1c2784ffd8d09b3e403c19011dc031..879eb9b8bb346d51f29673e2a25c0091f2af1482 100644
+--- a/src/mln/shaders/segment.hpp
++++ b/src/mln/shaders/segment.hpp
+@@ -3,6 +3,8 @@
+ #include <mln/gfx/draw_scope.hpp>
+ 
+ #include <cstddef>
++#include <cstdint>
++#include <limits>
+ #include <vector>
+ #include <map>
+ #include <string>
+@@ -56,4 +58,7 @@ public:
+ 
+ using SegmentVector = std::vector<SegmentBase>;
+ 
++/// A segment's vertices are addressed by 16-bit indices.
++constexpr std::size_t maxSegmentVertices = std::numeric_limits<uint16_t>::max();
++
+ } // namespace mln
+diff --git a/src/mln/tile/geometry_tile.cpp b/src/mln/tile/geometry_tile.cpp
+index 5c7d1a7ee43e7c5285ea5e18fbac44728a144863..9c31ab383b77a39afeee369a65a007fcb6442f43 100644
+--- a/src/mln/tile/geometry_tile.cpp
++++ b/src/mln/tile/geometry_tile.cpp
+@@ -341,6 +341,16 @@ void GeometryTile::setShowCollisionBoxes(const bool showCollisionBoxes_) {
+     }
+ }
+ 
++void GeometryTile::setSubdivisionGranularity(const SubdivisionGranularitySetting& subdivisionGranularity_) {
++    MLN_TRACE_FUNC();
++
++    if (subdivisionGranularity != subdivisionGranularity_) {
++        subdivisionGranularity = subdivisionGranularity_;
++        ++correlationID;
++        worker.self().invoke(&GeometryTileWorker::setSubdivisionGranularity, subdivisionGranularity, correlationID);
++    }
++}
++
+ void GeometryTile::onLayout(std::shared_ptr<LayoutResult>&& result, const uint64_t resultCorrelationID) {
+     MLN_TRACE_FUNC();
+ 
+diff --git a/src/mln/tile/geometry_tile.hpp b/src/mln/tile/geometry_tile.hpp
+index b3f3fcd7f48591844231e66e7576d1f8135d3392..ac35e395b685db3d13896ddfc6fbc97ef6774ec8 100644
+--- a/src/mln/tile/geometry_tile.hpp
++++ b/src/mln/tile/geometry_tile.hpp
+@@ -44,6 +44,7 @@ public:
+     void setLayers(const std::vector<Immutable<style::LayerProperties>>&,
+                    std::shared_ptr<const GlobalStateMap>) override;
+     void setShowCollisionBoxes(bool showCollisionBoxes) override;
++    void setSubdivisionGranularity(const SubdivisionGranularitySetting&) override;
+ 
+     void onGlyphsAvailable(GlyphMap, HBShapeRequests) override;
+     void onImagesAvailable(ImageMap, ImageMap, ImageVersionMap versionMap, uint64_t imageCorrelationID) override;
+@@ -134,6 +135,7 @@ private:
+     const MapMode mode;
+ 
+     bool showCollisionBoxes;
++    SubdivisionGranularitySetting subdivisionGranularity;
+ 
+     enum class FadeState {
+         Loaded,
+diff --git a/src/mln/tile/geometry_tile_worker.cpp b/src/mln/tile/geometry_tile_worker.cpp
+index 2b3a193d09fb2dbb1d6bb0d3f8ed470c5d2d4fe5..efa44b6c64b9a877e17bdb94cb78a996d1091ea8 100644
+--- a/src/mln/tile/geometry_tile_worker.cpp
++++ b/src/mln/tile/geometry_tile_worker.cpp
+@@ -237,6 +237,33 @@ void GeometryTileWorker::setShowCollisionBoxes(bool showCollisionBoxes_, uint64_
+     }
+ }
+ 
++void GeometryTileWorker::setSubdivisionGranularity(const SubdivisionGranularitySetting& subdivisionGranularity_,
++                                                   uint64_t correlationID_) {
++    MLN_TRACE_FUNC();
++
++    try {
++        subdivisionGranularity = subdivisionGranularity_;
++        correlationID = correlationID_;
++
++        switch (state) {
++            case Idle:
++                parse();
++                coalesce();
++                break;
++
++            case Coalescing:
++            case NeedsSymbolLayout:
++                state = NeedsParse;
++                break;
++
++            case NeedsParse:
++                break;
++        }
++    } catch (...) {
++        parent.invoke(&GeometryTile::onError, std::current_exception(), correlationID);
++    }
++}
++
+ void GeometryTileWorker::symbolDependenciesChanged() {
+     MLN_TRACE_FUNC();
+ 
+@@ -463,7 +490,8 @@ void GeometryTileWorker::parse() {
+                                     .pixelRatio = pixelRatio,
+                                     .layerType = leaderImpl.getTypeInfo(),
+                                     .globalState = globalState,
+-                                    .retainFeaturesById = captureRenderedFeatures};
++                                    .retainFeaturesById = captureRenderedFeatures,
++                                    .subdivisionGranularity = subdivisionGranularity};
+ 
+         auto geometryLayer = (*data)->getLayer(leaderImpl.sourceLayer);
+         if (!geometryLayer) {
+diff --git a/src/mln/tile/geometry_tile_worker.hpp b/src/mln/tile/geometry_tile_worker.hpp
+index dd3bb48c53546332d4c17d3cad3d16c3aec9c76e..f8abda19c0e49e75547ef2e228cca1e9b15dfa6c 100644
+--- a/src/mln/tile/geometry_tile_worker.hpp
++++ b/src/mln/tile/geometry_tile_worker.hpp
+@@ -2,6 +2,7 @@
+ 
+ #include <mln/map/mode.hpp>
+ #include <mln/tile/tile_id.hpp>
++#include <mln/util/subdivision_granularity.hpp>
+ #include <mln/style/image_impl.hpp>
+ #include <mln/text/glyph.hpp>
+ #include <mln/text/glyph_manager.hpp>
+@@ -61,6 +62,7 @@ public:
+                  uint64_t correlationID);
+     void reset(uint64_t correlationID_);
+     void setShowCollisionBoxes(bool showCollisionBoxes_, uint64_t correlationID_);
++    void setSubdivisionGranularity(const SubdivisionGranularitySetting&, uint64_t correlationID_);
+ 
+     void onGlyphsAvailable(GlyphMap glyphs, HBShapeResults requests);
+ 
+@@ -128,6 +130,7 @@ private:
+     Immutable<std::set<std::string>> availableImages = makeMutable<std::set<std::string>>();
+ 
+     bool showCollisionBoxes;
++    SubdivisionGranularitySetting subdivisionGranularity;
+     bool firstLoad = true;
+ 
+     gfx::DynamicTextureAtlasPtr dynamicTextureAtlas;
+diff --git a/src/mln/tile/tile.hpp b/src/mln/tile/tile.hpp
+index f21ee089d369a0aff984358878d472ea27d9cc84..03eca216b8467819159870cefe01d7fe3fa67468 100644
+--- a/src/mln/tile/tile.hpp
++++ b/src/mln/tile/tile.hpp
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <mln/util/subdivision_granularity.hpp>
+ #include <mln/util/noncopyable.hpp>
+ #include <mln/util/chrono.hpp>
+ #include <mln/util/feature.hpp>
+@@ -80,6 +81,7 @@ public:
+     // tile (and i.e. it was successfully updated); returns `false` otherwise.
+     virtual bool layerPropertiesUpdated(const Immutable<style::LayerProperties>& layerProperties) = 0;
+     virtual void setShowCollisionBoxes(const bool) {}
++    virtual void setSubdivisionGranularity(const SubdivisionGranularitySetting&) {}
+     virtual void setLayers(const std::vector<Immutable<style::LayerProperties>>&,
+                            std::shared_ptr<const GlobalStateMap>) {}
+     virtual void setMask(TileMask&&) {}
+diff --git a/src/mln/util/subdivision.cpp b/src/mln/util/subdivision.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..413bc7eb35e92e44fd38aff162bf2ec2962a23ae
+--- /dev/null
++++ b/src/mln/util/subdivision.cpp
+@@ -0,0 +1,594 @@
++#include <mln/util/subdivision.hpp>
++#include <mln/util/constants.hpp>
++
++#ifdef _MSC_VER
++#pragma warning(push)
++#pragma warning(disable : 4244)
++#endif
++
++#include <mapbox/earcut.hpp>
++
++#ifdef _MSC_VER
++#pragma warning(pop)
++#endif
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <limits>
++#include <stdexcept>
++#include <unordered_map>
++
++namespace mapbox {
++namespace util {
++template <>
++struct nth<0, mln::GeometryCoordinate> {
++    static int64_t get(const mln::GeometryCoordinate& t) { return t.x; };
++};
++template <>
++struct nth<1, mln::GeometryCoordinate> {
++    static int64_t get(const mln::GeometryCoordinate& t) { return t.y; };
++};
++} // namespace util
++} // namespace mapbox
++
++namespace mln {
++namespace util {
++
++namespace {
++
++class Subdivider {
++public:
++    Subdivider(uint32_t granularity_, const CanonicalTileID& canonical_)
++        : canonical(canonical_),
++          granularity(granularity_),
++          cellSize(static_cast<double>(EXTENT) / granularity_) {}
++
++    SubdivisionResult subdivide(const GeometryCollection& polygon, bool generateOutlineLines) {
++        std::vector<GeometryCoordinate> flattened;
++        for (const auto& ring : polygon) {
++            for (const auto& point : ring) {
++                flattened.push_back(point);
++                vertexToIndex(point.x, point.y);
++            }
++        }
++
++        std::vector<uint32_t> triangles = convertIndices(flattened, mapbox::earcut(polygon));
++        triangles = subdivideTrianglesScanline(triangles);
++
++        std::vector<std::vector<uint32_t>> lines;
++        if (generateOutlineLines) {
++            lines = generateOutline(polygon);
++        }
++
++        ensureNoPoleVertices();
++        handlePoles(triangles);
++
++        if (granularity >= 2 && canonical.z == 0) {
++            triangles = removeTrianglesOutsideTileX(triangles);
++            for (auto& line : lines) {
++                line = removeLinesOutsideTileX(line);
++            }
++        }
++
++        return {.vertices = std::move(vertices),
++                .triangleIndices = std::move(triangles),
++                .lineIndexLists = std::move(lines)};
++    }
++
++private:
++    static uint32_t key(int32_t x, int32_t y) {
++        return (static_cast<uint32_t>(x + 32768) << 16) | static_cast<uint32_t>(y + 32768);
++    }
++
++    uint32_t vertexToIndex(double x, double y) {
++        if (x < -32768 || y < -32768 || x > 32767 || y > 32767) {
++            throw std::out_of_range("Vertex coordinates are out of signed 16 bit integer range.");
++        }
++        const auto xInt = static_cast<int32_t>(std::lround(x));
++        const auto yInt = static_cast<int32_t>(std::lround(y));
++        const uint32_t k = key(xInt, yInt);
++        if (const auto it = dictionary.find(k); it != dictionary.end()) {
++            return it->second;
++        }
++        const auto index = static_cast<uint32_t>(vertices.size() / 2);
++        dictionary.emplace(k, index);
++        vertices.push_back(static_cast<int16_t>(xInt));
++        vertices.push_back(static_cast<int16_t>(yInt));
++        return index;
++    }
++
++    std::vector<uint32_t> convertIndices(const std::vector<GeometryCoordinate>& flattened,
++                                         const std::vector<uint32_t>& indices) {
++        std::vector<uint32_t> converted;
++        converted.reserve(indices.size());
++        for (const uint32_t index : indices) {
++            converted.push_back(vertexToIndex(flattened[index].x, flattened[index].y));
++        }
++        return converted;
++    }
++
++    std::vector<uint32_t> subdivideTrianglesScanline(const std::vector<uint32_t>& inputIndices) {
++        if (granularity < 2) {
++            return fixWindingOrder(vertices, inputIndices);
++        }
++
++        std::vector<uint32_t> finalIndices;
++        for (std::size_t primitive = 0; primitive + 2 < inputIndices.size(); primitive += 3) {
++            const std::array<uint32_t, 3> triangleIndices{
++                inputIndices[primitive], inputIndices[primitive + 1], inputIndices[primitive + 2]};
++            std::array<double, 6> triangle{};
++            double minX = std::numeric_limits<double>::infinity();
++            double minY = minX;
++            double maxX = -std::numeric_limits<double>::infinity();
++            double maxY = maxX;
++            for (std::size_t i = 0; i < 3; i++) {
++                triangle[i * 2] = vertices[triangleIndices[i] * 2];
++                triangle[i * 2 + 1] = vertices[triangleIndices[i] * 2 + 1];
++                minX = std::min(minX, triangle[i * 2]);
++                maxX = std::max(maxX, triangle[i * 2]);
++                minY = std::min(minY, triangle[i * 2 + 1]);
++                maxY = std::max(maxY, triangle[i * 2 + 1]);
++            }
++            if (minX == maxX || minY == maxY) {
++                continue;
++            }
++
++            const auto cellXmin = static_cast<int32_t>(std::floor(minX / cellSize));
++            const auto cellXmax = static_cast<int32_t>(std::ceil(maxX / cellSize));
++            const auto cellYmin = static_cast<int32_t>(std::floor(minY / cellSize));
++            const auto cellYmax = static_cast<int32_t>(std::ceil(maxY / cellSize));
++
++            if (cellXmin == cellXmax && cellYmin == cellYmax) {
++                finalIndices.insert(finalIndices.end(), triangleIndices.begin(), triangleIndices.end());
++                continue;
++            }
++
++            for (int32_t cellRow = cellYmin; cellRow < cellYmax; cellRow++) {
++                const std::vector<uint32_t> ring = generateVertexRingForCellRow(cellRow, triangle, triangleIndices);
++                scanlineTriangulateVertexRing(vertices, ring, finalIndices);
++            }
++        }
++        return finalIndices;
++    }
++
++    std::vector<uint32_t> generateVertexRingForCellRow(int32_t cellRow,
++                                                       const std::array<double, 6>& triangle,
++                                                       const std::array<uint32_t, 3>& triangleIndices) {
++        const double cellRowYTop = cellRow * cellSize;
++        const double cellRowYBottom = cellRowYTop + cellSize;
++        std::vector<uint32_t> ring;
++
++        for (std::size_t edge = 0; edge < 3; edge++) {
++            const double aX = triangle[edge * 2];
++            const double aY = triangle[edge * 2 + 1];
++            const double bX = triangle[((edge + 1) * 2) % 6];
++            const double bY = triangle[((edge + 1) * 2 + 1) % 6];
++            const double cX = triangle[((edge + 2) * 2) % 6];
++            const double cY = triangle[((edge + 2) * 2 + 1) % 6];
++            const double dirX = bX - aX;
++            const double dirY = bY - aY;
++            const bool isParallelY = dirX == 0;
++            const bool isParallelX = dirY == 0;
++
++            const double tTop = (cellRowYTop - aY) / dirY;
++            const double tBottom = (cellRowYBottom - aY) / dirY;
++            const double tEnter = std::min(tTop, tBottom);
++            const double tExit = std::max(tTop, tBottom);
++
++            if ((!isParallelX && (tEnter >= 1 || tExit <= 0)) ||
++                (isParallelX && (aY < cellRowYTop || aY > cellRowYBottom))) {
++                if (bY >= cellRowYTop && bY <= cellRowYBottom) {
++                    ring.push_back(triangleIndices[(edge + 1) % 3]);
++                }
++                continue;
++            }
++
++            if (!isParallelX && tEnter > 0) {
++                ring.push_back(vertexToIndex(aX + dirX * tEnter, aY + dirY * tEnter));
++            }
++
++            const double enterX = aX + dirX * std::max(tEnter, 0.0);
++            const double exitX = aX + dirX * std::min(tExit, 1.0);
++
++            if (!isParallelY) {
++                generateIntraEdgeVertices(ring, aX, aY, bX, bY, enterX, exitX);
++            }
++
++            if (!isParallelX && tExit < 1) {
++                ring.push_back(vertexToIndex(aX + dirX * tExit, aY + dirY * tExit));
++            }
++
++            if (isParallelX || (bY >= cellRowYTop && bY <= cellRowYBottom)) {
++                ring.push_back(triangleIndices[(edge + 1) % 3]);
++            }
++
++            if (!isParallelX && (bY <= cellRowYTop || bY >= cellRowYBottom)) {
++                generateInterEdgeVertices(ring, aX, aY, bX, bY, cX, cY, exitX, cellRowYTop, cellRowYBottom);
++            }
++        }
++        return ring;
++    }
++
++    void generateIntraEdgeVertices(
++        std::vector<uint32_t>& ring, double aX, double aY, double bX, double bY, double enterX, double exitX) {
++        const double dirX = bX - aX;
++        const double dirY = bY - aY;
++        const bool isParallelX = dirY == 0;
++        const double leftX = isParallelX ? std::min(aX, bX) : std::min(enterX, exitX);
++        const double rightX = isParallelX ? std::max(aX, bX) : std::max(enterX, exitX);
++        const auto leftCellX = static_cast<int32_t>(std::floor(leftX / cellSize)) + 1;
++        const auto rightCellX = static_cast<int32_t>(std::ceil(rightX / cellSize)) - 1;
++        const bool leftToRight = isParallelX ? (aX < bX) : (enterX < exitX);
++
++        const auto emit = [&](int32_t cellX) {
++            const double x = cellX * cellSize;
++            ring.push_back(vertexToIndex(x, aY + dirY * (x - aX) / dirX));
++        };
++        if (leftToRight) {
++            for (int32_t cellX = leftCellX; cellX <= rightCellX; cellX++) {
++                emit(cellX);
++            }
++        } else {
++            for (int32_t cellX = rightCellX; cellX >= leftCellX; cellX--) {
++                emit(cellX);
++            }
++        }
++    }
++
++    void generateInterEdgeVertices(std::vector<uint32_t>& ring,
++                                   double aX,
++                                   double aY,
++                                   double bX,
++                                   double bY,
++                                   double cX,
++                                   double cY,
++                                   double exitX,
++                                   double cellRowYTop,
++                                   double cellRowYBottom) {
++        const double dirY = bY - aY;
++        const double dir2X = cX - bX;
++        const double dir2Y = cY - bY;
++        const double t2Top = (cellRowYTop - bY) / dir2Y;
++        const double t2Bottom = (cellRowYBottom - bY) / dir2Y;
++        const double t2Enter = std::min(t2Top, t2Bottom);
++        const double t2Exit = std::max(t2Top, t2Bottom);
++        const double enter2X = bX + dir2X * t2Enter;
++
++        auto leftCellX = static_cast<int32_t>(std::floor(std::min(enter2X, exitX) / cellSize)) + 1;
++        auto rightCellX = static_cast<int32_t>(std::ceil(std::max(enter2X, exitX) / cellSize)) - 1;
++        bool leftToRight = exitX < enter2X;
++
++        const bool isParallelX2 = dir2Y == 0;
++        if (isParallelX2 && (cY == cellRowYTop || cY == cellRowYBottom)) {
++            return;
++        }
++
++        if (isParallelX2 || t2Enter >= 1 || t2Exit <= 0) {
++            const double dir3X = aX - cX;
++            const double dir3Y = aY - cY;
++            const double t3Top = (cellRowYTop - cY) / dir3Y;
++            const double t3Bottom = (cellRowYBottom - cY) / dir3Y;
++            const double t3Enter = std::min(t3Top, t3Bottom);
++            const double enter3X = cX + dir3X * t3Enter;
++            leftCellX = static_cast<int32_t>(std::floor(std::min(enter3X, exitX) / cellSize)) + 1;
++            rightCellX = static_cast<int32_t>(std::ceil(std::max(enter3X, exitX) / cellSize)) - 1;
++            leftToRight = exitX < enter3X;
++        }
++
++        const double boundaryY = dirY > 0 ? cellRowYBottom : cellRowYTop;
++        if (leftToRight) {
++            for (int32_t cellX = leftCellX; cellX <= rightCellX; cellX++) {
++                ring.push_back(vertexToIndex(cellX * cellSize, boundaryY));
++            }
++        } else {
++            for (int32_t cellX = rightCellX; cellX >= leftCellX; cellX--) {
++                ring.push_back(vertexToIndex(cellX * cellSize, boundaryY));
++            }
++        }
++    }
++
++    std::vector<std::vector<uint32_t>> generateOutline(const GeometryCollection& polygon) {
++        std::vector<std::vector<uint32_t>> lines;
++        for (const auto& ring : polygon) {
++            const GeometryCoordinates path = subdivideVertexLine(ring, granularity, true);
++            std::vector<uint32_t> lineIndices;
++            for (std::size_t i = 1; i < path.size(); i++) {
++                lineIndices.push_back(vertexToIndex(path[i - 1].x, path[i - 1].y));
++                lineIndices.push_back(vertexToIndex(path[i].x, path[i].y));
++            }
++            lines.push_back(std::move(lineIndices));
++        }
++        return lines;
++    }
++
++    void ensureNoPoleVertices() {
++        for (std::size_t i = 1; i < vertices.size(); i += 2) {
++            if (vertices[i] == NORTH_POLE_Y) {
++                vertices[i] = NORTH_POLE_Y + 1;
++            }
++            if (vertices[i] == SOUTH_POLE_Y) {
++                vertices[i] = SOUTH_POLE_Y - 1;
++            }
++        }
++    }
++
++    void handlePoles(std::vector<uint32_t>& triangles) {
++        const bool north = canonical.y == 0;
++        const bool south = canonical.y == (1u << canonical.z) - 1;
++        if (north || south) {
++            fillPoles(triangles, north, south);
++        }
++    }
++
++    void generatePoleQuad(
++        std::vector<uint32_t>& indices, uint32_t i0, uint32_t i1, int16_t v0x, int16_t v1x, int16_t poleY) {
++        const bool flip = (v0x > v1x) != (poleY == NORTH_POLE_Y);
++        const uint32_t p0 = vertexToIndex(v0x, poleY);
++        const uint32_t p1 = vertexToIndex(v1x, poleY);
++        if (flip) {
++            indices.insert(indices.end(), {i0, i1, p0, i1, p1, p0});
++        } else {
++            indices.insert(indices.end(), {i1, i0, p0, p1, i1, p0});
++        }
++    }
++
++    void fillPoles(std::vector<uint32_t>& indices, bool north, bool south) {
++        constexpr int16_t northEdge = 0;
++        constexpr int16_t southEdge = EXTENT;
++        const std::size_t count = indices.size();
++        for (std::size_t primitive = 2; primitive < count; primitive += 3) {
++            const uint32_t i0 = indices[primitive - 2];
++            const uint32_t i1 = indices[primitive - 1];
++            const uint32_t i2 = indices[primitive];
++            const int16_t v0x = vertices[i0 * 2];
++            const int16_t v0y = vertices[i0 * 2 + 1];
++            const int16_t v1x = vertices[i1 * 2];
++            const int16_t v1y = vertices[i1 * 2 + 1];
++            const int16_t v2x = vertices[i2 * 2];
++            const int16_t v2y = vertices[i2 * 2 + 1];
++            if (north) {
++                if (v0y == northEdge && v1y == northEdge) generatePoleQuad(indices, i0, i1, v0x, v1x, NORTH_POLE_Y);
++                if (v1y == northEdge && v2y == northEdge) generatePoleQuad(indices, i1, i2, v1x, v2x, NORTH_POLE_Y);
++                if (v2y == northEdge && v0y == northEdge) generatePoleQuad(indices, i2, i0, v2x, v0x, NORTH_POLE_Y);
++            }
++            if (south) {
++                if (v0y == southEdge && v1y == southEdge) generatePoleQuad(indices, i0, i1, v0x, v1x, SOUTH_POLE_Y);
++                if (v1y == southEdge && v2y == southEdge) generatePoleQuad(indices, i1, i2, v1x, v2x, SOUTH_POLE_Y);
++                if (v2y == southEdge && v0y == southEdge) generatePoleQuad(indices, i2, i0, v2x, v0x, SOUTH_POLE_Y);
++            }
++        }
++    }
++
++    bool vertexOutsideTileX(uint32_t index) const {
++        const int16_t x = vertices[index * 2];
++        return x < 0 || x > EXTENT;
++    }
++
++    std::vector<uint32_t> removeTrianglesOutsideTileX(const std::vector<uint32_t>& indices) const {
++        std::vector<uint32_t> result;
++        for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
++            if (vertexOutsideTileX(indices[i]) && vertexOutsideTileX(indices[i + 1]) &&
++                vertexOutsideTileX(indices[i + 2])) {
++                continue;
++            }
++            result.insert(result.end(), {indices[i], indices[i + 1], indices[i + 2]});
++        }
++        return result;
++    }
++
++    std::vector<uint32_t> removeLinesOutsideTileX(const std::vector<uint32_t>& indices) const {
++        std::vector<uint32_t> result;
++        for (std::size_t i = 0; i + 1 < indices.size(); i += 2) {
++            if (vertexOutsideTileX(indices[i]) && vertexOutsideTileX(indices[i + 1])) {
++                continue;
++            }
++            result.insert(result.end(), {indices[i], indices[i + 1]});
++        }
++        return result;
++    }
++
++    std::vector<int16_t> vertices;
++    std::unordered_map<uint32_t, uint32_t> dictionary;
++    const CanonicalTileID canonical;
++    const uint32_t granularity;
++    const double cellSize;
++};
++
++} // namespace
++
++SubdivisionResult subdividePolygon(const GeometryCollection& polygon,
++                                   const CanonicalTileID& canonical,
++                                   uint32_t granularity,
++                                   bool generateOutlineLines) {
++    return Subdivider(granularity, canonical).subdivide(polygon, generateOutlineLines);
++}
++
++SubdivisionResult subdividePolygonWithinLimit(const GeometryCollection& polygon,
++                                              const CanonicalTileID& canonical,
++                                              uint32_t granularity,
++                                              bool generateOutlineLines,
++                                              std::size_t maxVertices) {
++    while (true) {
++        SubdivisionResult result = subdividePolygon(polygon, canonical, granularity, generateOutlineLines);
++        if (result.vertices.size() / 2 <= maxVertices || granularity < 2) {
++            return result;
++        }
++        granularity /= 2;
++    }
++}
++
++GeometryCoordinates subdivideVertexLine(const GeometryCoordinates& line, uint32_t granularity, bool isRing) {
++    if (line.size() < 2) {
++        return {};
++    }
++
++    const bool closeRing = isRing && line.front() != line.back();
++    if (granularity < 2) {
++        GeometryCoordinates result = line;
++        if (closeRing) {
++            result.push_back(line.front());
++        }
++        return result;
++    }
++
++    const double cellSize = std::floor(static_cast<double>(EXTENT) / granularity);
++    GeometryCoordinates result;
++    result.push_back(line.front());
++
++    const auto pushUnique = [&](double x, double y) {
++        const GeometryCoordinate next{static_cast<int16_t>(x), static_cast<int16_t>(y)};
++        if (result.back() != next) {
++            result.push_back(next);
++        }
++    };
++
++    const std::size_t total = line.size();
++    const std::size_t lastIndex = closeRing ? total : total - 1;
++    for (std::size_t pointIndex = 0; pointIndex < lastIndex; pointIndex++) {
++        const GeometryCoordinate& p0 = line[pointIndex];
++        const GeometryCoordinate& p1 = pointIndex < total - 1 ? line[pointIndex + 1] : line[0];
++        const double v0x = p0.x;
++        const double v0y = p0.y;
++        const double v1x = p1.x;
++        const double v1y = p1.y;
++
++        const bool dirXnonZero = v0x != v1x;
++        const bool dirYnonZero = v0y != v1y;
++        if (!dirXnonZero && !dirYnonZero) {
++            continue;
++        }
++
++        const double dirX = v1x - v0x;
++        const double dirY = v1y - v0y;
++        const double absDirX = std::abs(dirX);
++        const double absDirY = std::abs(dirY);
++        double lastX = v0x;
++        double lastY = v0y;
++
++        while (true) {
++            const double nextBoundaryX = dirX > 0 ? (std::floor(lastX / cellSize) + 1) * cellSize
++                                                  : (std::ceil(lastX / cellSize) - 1) * cellSize;
++            const double nextBoundaryY = dirY > 0 ? (std::floor(lastY / cellSize) + 1) * cellSize
++                                                  : (std::ceil(lastY / cellSize) - 1) * cellSize;
++            const double axisDistanceToBoundaryX = std::abs(lastX - nextBoundaryX);
++            const double axisDistanceToBoundaryY = std::abs(lastY - nextBoundaryY);
++            const double axisDistanceToEndX = std::abs(lastX - v1x);
++            const double axisDistanceToEndY = std::abs(lastY - v1y);
++            const double realDistanceToBoundaryX = dirXnonZero ? axisDistanceToBoundaryX / absDirX
++                                                               : std::numeric_limits<double>::infinity();
++            const double realDistanceToBoundaryY = dirYnonZero ? axisDistanceToBoundaryY / absDirY
++                                                               : std::numeric_limits<double>::infinity();
++
++            if ((axisDistanceToEndX <= axisDistanceToBoundaryX || !dirXnonZero) &&
++                (axisDistanceToEndY <= axisDistanceToBoundaryY || !dirYnonZero)) {
++                break;
++            }
++
++            if ((realDistanceToBoundaryX < realDistanceToBoundaryY && dirXnonZero) || !dirYnonZero) {
++                lastX = nextBoundaryX;
++                lastY = lastY + dirY * realDistanceToBoundaryX;
++                pushUnique(lastX, std::round(lastY));
++            } else {
++                lastX = lastX + dirX * realDistanceToBoundaryY;
++                lastY = nextBoundaryY;
++                pushUnique(std::round(lastX), lastY);
++            }
++        }
++        pushUnique(v1x, v1y);
++    }
++    return result;
++}
++
++std::vector<uint32_t> fixWindingOrder(const std::vector<int16_t>& vertices, const std::vector<uint32_t>& indices) {
++    std::vector<uint32_t> corrected;
++    corrected.reserve(indices.size());
++    for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
++        const uint32_t i0 = indices[i];
++        const uint32_t i1 = indices[i + 1];
++        const uint32_t i2 = indices[i + 2];
++        const double e0x = vertices[i1 * 2] - vertices[i0 * 2];
++        const double e0y = vertices[i1 * 2 + 1] - vertices[i0 * 2 + 1];
++        const double e1x = vertices[i2 * 2] - vertices[i0 * 2];
++        const double e1y = vertices[i2 * 2 + 1] - vertices[i0 * 2 + 1];
++        if (e0x * e1y - e0y * e1x > 0) {
++            corrected.insert(corrected.end(), {i0, i2, i1});
++        } else {
++            corrected.insert(corrected.end(), {i0, i1, i2});
++        }
++    }
++    return corrected;
++}
++
++void scanlineTriangulateVertexRing(const std::vector<int16_t>& vertices,
++                                   const std::vector<uint32_t>& ring,
++                                   std::vector<uint32_t>& outIndices) {
++    if (ring.empty()) {
++        throw std::invalid_argument("Subdivision vertex ring is empty.");
++    }
++
++    std::size_t leftmostIndex = 0;
++    int16_t leftmostX = vertices[ring[0] * 2];
++    for (std::size_t i = 1; i < ring.size(); i++) {
++        const int16_t x = vertices[ring[i] * 2];
++        if (x < leftmostX) {
++            leftmostX = x;
++            leftmostIndex = i;
++        }
++    }
++
++    const std::size_t length = ring.size();
++    std::size_t lastEdgeA = leftmostIndex;
++    std::size_t lastEdgeB = (lastEdgeA + 1) % length;
++
++    while (true) {
++        const std::size_t candidateA = lastEdgeA >= 1 ? lastEdgeA - 1 : length - 1;
++        const std::size_t candidateB = (lastEdgeB + 1) % length;
++
++        const double candidateAx = vertices[ring[candidateA] * 2];
++        const double candidateAy = vertices[ring[candidateA] * 2 + 1];
++        const double candidateBx = vertices[ring[candidateB] * 2];
++        const double candidateBy = vertices[ring[candidateB] * 2 + 1];
++        const double lastEdgeAx = vertices[ring[lastEdgeA] * 2];
++        const double lastEdgeAy = vertices[ring[lastEdgeA] * 2 + 1];
++        const double lastEdgeBx = vertices[ring[lastEdgeB] * 2];
++        const double lastEdgeBy = vertices[ring[lastEdgeB] * 2 + 1];
++
++        bool pickA = false;
++        if (candidateAx < candidateBx) {
++            pickA = true;
++        } else if (candidateAx > candidateBx) {
++            pickA = false;
++        } else {
++            const double nx = lastEdgeBy - lastEdgeAy;
++            const double ny = -(lastEdgeBx - lastEdgeAx);
++            const double sign = lastEdgeAy < lastEdgeBy ? 1 : -1;
++            const double aRight = ((candidateAx - lastEdgeAx) * nx + (candidateAy - lastEdgeAy) * ny) * sign;
++            const double bRight = ((candidateBx - lastEdgeAx) * nx + (candidateBy - lastEdgeAy) * ny) * sign;
++            pickA = aRight > bRight;
++        }
++
++        const uint32_t a = ring[lastEdgeA];
++        const uint32_t b = ring[lastEdgeB];
++        if (pickA) {
++            const uint32_t c = ring[candidateA];
++            if (c != a && c != b && a != b) {
++                outIndices.insert(outIndices.end(), {b, a, c});
++            }
++            lastEdgeA = lastEdgeA >= 1 ? lastEdgeA - 1 : length - 1;
++        } else {
++            const uint32_t c = ring[candidateB];
++            if (c != a && c != b && a != b) {
++                outIndices.insert(outIndices.end(), {b, a, c});
++            }
++            lastEdgeB = (lastEdgeB + 1) % length;
++        }
++
++        if (candidateA == candidateB) {
++            break;
++        }
++    }
++}
++
++} // namespace util
++} // namespace mln
+diff --git a/src/mln/util/tile_mesh.cpp b/src/mln/util/tile_mesh.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f7a81933aeb514f3e8da42b91dc790fac6f3623
+--- /dev/null
++++ b/src/mln/util/tile_mesh.cpp
+@@ -0,0 +1,69 @@
++#include <mln/util/tile_mesh.hpp>
++#include <mln/util/constants.hpp>
++#include <mln/util/subdivision.hpp>
++
++#include <algorithm>
++#include <stdexcept>
++
++namespace mln {
++namespace util {
++
++namespace {
++constexpr int32_t EXTENT_STENCIL_BORDER = EXTENT / 128;
++} // namespace
++
++TileMesh createTileMesh(const TileMeshOptions& options) {
++    const int32_t granularity = static_cast<int32_t>(std::max(options.granularity, 1u));
++
++    const int32_t quadsPerAxisX = granularity + (options.generateBorders ? 2 : 0);
++    const int32_t quadsPerAxisY = granularity + ((options.extendToNorthPole || options.generateBorders) ? 1 : 0) +
++                                  ((options.extendToSouthPole || options.generateBorders) ? 1 : 0);
++    const int32_t verticesPerAxisX = quadsPerAxisX + 1;
++    const int32_t verticesPerAxisY = quadsPerAxisY + 1;
++    const int32_t offsetX = options.generateBorders ? -1 : 0;
++    const int32_t offsetY = (options.generateBorders || options.extendToNorthPole) ? -1 : 0;
++    const int32_t endX = granularity + (options.generateBorders ? 1 : 0);
++    const int32_t endY = granularity + ((options.generateBorders || options.extendToSouthPole) ? 1 : 0);
++
++    if (verticesPerAxisX * verticesPerAxisY > (1 << 16)) {
++        throw std::invalid_argument("Tile mesh granularity is too large for 16 bit indices.");
++    }
++
++    TileMesh mesh;
++    mesh.vertices.reserve(static_cast<std::size_t>(verticesPerAxisX) * verticesPerAxisY * 2);
++    for (int32_t y = offsetY; y <= endY; y++) {
++        for (int32_t x = offsetX; x <= endX; x++) {
++            int32_t vx = x * EXTENT / granularity;
++            if (x == -1) {
++                vx = -EXTENT_STENCIL_BORDER;
++            }
++            if (x == granularity + 1) {
++                vx = EXTENT + EXTENT_STENCIL_BORDER;
++            }
++            int32_t vy = y * EXTENT / granularity;
++            if (y == -1) {
++                vy = options.extendToNorthPole ? NORTH_POLE_Y : -EXTENT_STENCIL_BORDER;
++            }
++            if (y == granularity + 1) {
++                vy = options.extendToSouthPole ? SOUTH_POLE_Y : EXTENT + EXTENT_STENCIL_BORDER;
++            }
++            mesh.vertices.push_back(static_cast<int16_t>(vx));
++            mesh.vertices.push_back(static_cast<int16_t>(vy));
++        }
++    }
++
++    mesh.indices.reserve(static_cast<std::size_t>(quadsPerAxisX) * quadsPerAxisY * 6);
++    for (int32_t y = 0; y < quadsPerAxisY; y++) {
++        for (int32_t x = 0; x < quadsPerAxisX; x++) {
++            const auto v0 = static_cast<uint16_t>(x + y * verticesPerAxisX);
++            const auto v1 = static_cast<uint16_t>((x + 1) + y * verticesPerAxisX);
++            const auto v2 = static_cast<uint16_t>(x + (y + 1) * verticesPerAxisX);
++            const auto v3 = static_cast<uint16_t>((x + 1) + (y + 1) * verticesPerAxisX);
++            mesh.indices.insert(mesh.indices.end(), {v0, v2, v1, v1, v2, v3});
++        }
++    }
++    return mesh;
++}
++
++} // namespace util
++} // namespace mln
+diff --git a/test/util/subdivision.test.cpp b/test/util/subdivision.test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1b162af4e81d6f9fef01ac1bcc31089577bf7479
+--- /dev/null
++++ b/test/util/subdivision.test.cpp
+@@ -0,0 +1,309 @@
++#include <mln/test/util.hpp>
++
++#include <mln/util/constants.hpp>
++#include <mln/util/subdivision.hpp>
++#include <mln/util/subdivision_granularity.hpp>
++#include <mln/util/tile_mesh.hpp>
++
++#include <map>
++#include <set>
++
++using namespace mln;
++using namespace mln::util;
++
++namespace {
++
++GeometryCollection square(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
++    return {{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}, {x0, y0}}};
++}
++
++template <typename Index>
++double signedArea(const std::vector<int16_t>& v, Index i0, Index i1, Index i2) {
++    const double e0x = v[i1 * 2] - v[i0 * 2];
++    const double e0y = v[i1 * 2 + 1] - v[i0 * 2 + 1];
++    const double e1x = v[i2 * 2] - v[i0 * 2];
++    const double e1y = v[i2 * 2 + 1] - v[i0 * 2 + 1];
++    return e0x * e1y - e0y * e1x;
++}
++
++double totalArea(const SubdivisionResult& r) {
++    double area = 0;
++    for (std::size_t i = 0; i + 2 < r.triangleIndices.size(); i += 3) {
++        area += std::abs(
++                    signedArea(r.vertices, r.triangleIndices[i], r.triangleIndices[i + 1], r.triangleIndices[i + 2])) /
++                2;
++    }
++    return area;
++}
++
++using Edge = std::pair<uint32_t, uint32_t>;
++
++std::map<Edge, int> edgeCounts(const SubdivisionResult& r) {
++    std::map<Edge, int> edges;
++    for (std::size_t i = 0; i + 2 < r.triangleIndices.size(); i += 3) {
++        for (std::size_t k = 0; k < 3; k++) {
++            const uint32_t a = r.triangleIndices[i + k];
++            const uint32_t b = r.triangleIndices[i + (k + 1) % 3];
++            edges[{std::min(a, b), std::max(a, b)}]++;
++        }
++    }
++    return edges;
++}
++
++// Every triangle with an edge on the tile's polar side gets its own quad up to the pole, and a polygon that reaches
++// past that side has triangles on both sides of it, so edges into a pole and edges along that side are shared more
++// than twice and are not part of the outline.
++bool touchesPole(const SubdivisionResult& r, const Edge& edge) {
++    const int16_t y0 = r.vertices[edge.first * 2 + 1];
++    const int16_t y1 = r.vertices[edge.second * 2 + 1];
++    const auto atPole = [](int16_t y) {
++        return y == NORTH_POLE_Y || y == SOUTH_POLE_Y;
++    };
++    if (atPole(y0) || atPole(y1)) return true;
++    if (y0 != y1) return false;
++    const auto hasVertexAt = [&](int16_t pole) {
++        for (std::size_t i = 1; i < r.vertices.size(); i += 2) {
++            if (r.vertices[i] == pole) return true;
++        }
++        return false;
++    };
++    return (y0 == 0 && hasVertexAt(NORTH_POLE_Y)) || (y0 == EXTENT && hasVertexAt(SOUTH_POLE_Y));
++}
++
++// The checks GL JS `subdivision.test.ts` runs on every polygon: no vertex twice, every interior edge shared by exactly
++// two triangles, no T-junctions, and the line lists are exactly the exposed edges of the mesh. At zoom 0 the
++// triangles left and right of the tile are dropped, which exposes cut edges that were never outline, so that
++// comparison is skipped for a clipped mesh, and for one built without outlines.
++void expectSoundMesh(const SubdivisionResult& r, bool clippedAtZoomZero = false) {
++    std::set<std::pair<int16_t, int16_t>> seen;
++    for (std::size_t i = 0; i + 1 < r.vertices.size(); i += 2) {
++        EXPECT_TRUE(seen.insert({r.vertices[i], r.vertices[i + 1]}).second) << "duplicate vertex " << i / 2;
++    }
++
++    const auto edges = edgeCounts(r);
++    for (const auto& [edge, count] : edges) {
++        if (count > 2 && !touchesPole(r, edge)) {
++            ADD_FAILURE() << "edge (" << r.vertices[edge.first * 2] << ", " << r.vertices[edge.first * 2 + 1] << ")-("
++                          << r.vertices[edge.second * 2] << ", " << r.vertices[edge.second * 2 + 1] << ") is shared by "
++                          << count << " triangles";
++        }
++    }
++
++    // T-junctions show up as boundary edges with a vertex lying strictly inside them.
++    std::size_t tJunctions = 0;
++    for (const auto& [edge, count] : edges) {
++        if (count != 1) continue;
++        const double ax = r.vertices[edge.first * 2], ay = r.vertices[edge.first * 2 + 1];
++        const double bx = r.vertices[edge.second * 2], by = r.vertices[edge.second * 2 + 1];
++        for (std::size_t v = 0; v < r.vertices.size() / 2; v++) {
++            if (v == edge.first || v == edge.second) continue;
++            const double px = r.vertices[v * 2], py = r.vertices[v * 2 + 1];
++            const double cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
++            if (cross != 0) continue;
++            const double dot = (px - ax) * (bx - ax) + (py - ay) * (by - ay);
++            const double len2 = (bx - ax) * (bx - ax) + (py - ay) * (by - ay);
++            if (dot > 0 && dot < len2) {
++                tJunctions++;
++                break;
++            }
++        }
++    }
++    EXPECT_EQ(0u, tJunctions);
++
++    if (clippedAtZoomZero || r.lineIndexLists.empty()) {
++        return;
++    }
++    std::set<Edge> exposed;
++    for (const auto& [edge, count] : edges) {
++        if (count == 1 && !touchesPole(r, edge)) {
++            exposed.insert(edge);
++        }
++    }
++    std::set<Edge> outline;
++    for (const auto& lines : r.lineIndexLists) {
++        for (std::size_t i = 0; i + 1 < lines.size(); i += 2) {
++            const Edge edge{std::min(lines[i], lines[i + 1]), std::max(lines[i], lines[i + 1])};
++            if (touchesPole(r, edge)) continue;
++            EXPECT_TRUE(outline.insert(edge).second) << "outline edge " << edge.first << "-" << edge.second << " twice";
++        }
++    }
++    EXPECT_EQ(exposed, outline);
++}
++
++} // namespace
++
++TEST(Subdivision, Granularity) {
++    const SubdivisionGranularityExpression fill{128, 2};
++    EXPECT_EQ(128u, fill.getGranularityForZoomLevel(0));
++    EXPECT_EQ(64u, fill.getGranularityForZoomLevel(1));
++    EXPECT_EQ(2u, fill.getGranularityForZoomLevel(6));
++    EXPECT_EQ(2u, fill.getGranularityForZoomLevel(12));
++    EXPECT_EQ(1u, SubdivisionGranularityExpression(0, 0).getGranularityForZoomLevel(3));
++}
++
++TEST(Subdivision, NoSubdivisionKeepsTriangles) {
++    // GL JS "Polygon is unchanged when granularity=1".
++    const auto result = subdividePolygon(square(0, 0, 20000, 20000), CanonicalTileID(3, 1, 1), 1);
++    EXPECT_EQ((std::vector<int16_t>{0, 0, 20000, 0, 20000, 20000, 0, 20000}), result.vertices);
++    // Two triangles on one diagonal (earcut's pick), wound the same way as GL JS's [2, 0, 3, 2, 1, 0].
++    EXPECT_EQ(6u, result.triangleIndices.size());
++    EXPECT_DOUBLE_EQ(20000.0 * 20000.0, totalArea(result));
++    for (std::size_t i = 0; i + 2 < result.triangleIndices.size(); i += 3) {
++        EXPECT_LT(signedArea(result.vertices,
++                             result.triangleIndices[i],
++                             result.triangleIndices[i + 1],
++                             result.triangleIndices[i + 2]),
++                  0.0);
++    }
++    ASSERT_EQ(1u, result.lineIndexLists.size());
++    EXPECT_EQ((std::vector<uint32_t>{0, 1, 1, 2, 2, 3, 3, 0}), result.lineIndexLists[0]);
++    expectSoundMesh(result);
++}
++
++TEST(Subdivision, SplitsOnCellBoundariesAndKeepsArea) {
++    const auto full = square(0, 0, EXTENT, EXTENT);
++    const auto result = subdividePolygon(full, CanonicalTileID(3, 1, 1), 4);
++    // A 4x4 grid: 25 unique vertices, 32 triangles.
++    EXPECT_EQ(25u, result.vertices.size() / 2);
++    EXPECT_EQ(32u * 3u, result.triangleIndices.size());
++    EXPECT_DOUBLE_EQ(static_cast<double>(EXTENT) * EXTENT, totalArea(result));
++    for (std::size_t i = 0; i + 2 < result.triangleIndices.size(); i += 3) {
++        EXPECT_LT(signedArea(result.vertices,
++                             result.triangleIndices[i],
++                             result.triangleIndices[i + 1],
++                             result.triangleIndices[i + 2]),
++                  0.0);
++    }
++    ASSERT_EQ(1u, result.lineIndexLists.size());
++    EXPECT_EQ(16u * 2u, result.lineIndexLists[0].size());
++    expectSoundMesh(result);
++}
++
++TEST(Subdivision, PoleTilesGetPoleQuads) {
++    const auto full = square(0, 0, EXTENT, EXTENT);
++    const auto north = subdividePolygon(full, CanonicalTileID(1, 0, 0), 2);
++    std::set<int16_t> ys;
++    for (std::size_t i = 1; i < north.vertices.size(); i += 2) {
++        ys.insert(north.vertices[i]);
++    }
++    EXPECT_TRUE(ys.contains(NORTH_POLE_Y));
++    EXPECT_FALSE(ys.contains(SOUTH_POLE_Y));
++    expectSoundMesh(north);
++
++    const auto south = subdividePolygon(full, CanonicalTileID(1, 0, 1), 2);
++    ys.clear();
++    for (std::size_t i = 1; i < south.vertices.size(); i += 2) {
++        ys.insert(south.vertices[i]);
++    }
++    EXPECT_TRUE(ys.contains(SOUTH_POLE_Y));
++    EXPECT_FALSE(ys.contains(NORTH_POLE_Y));
++    expectSoundMesh(south);
++
++    const auto middle = subdividePolygon(full, CanonicalTileID(2, 1, 1), 2);
++    for (std::size_t i = 1; i < middle.vertices.size(); i += 2) {
++        EXPECT_NE(NORTH_POLE_Y, middle.vertices[i]);
++        EXPECT_NE(SOUTH_POLE_Y, middle.vertices[i]);
++    }
++    expectSoundMesh(middle);
++}
++
++TEST(Subdivision, ZoomZeroDropsGeometryOutsideTheTile) {
++    const auto wide = square(-2000, 1000, EXTENT + 2000, 2000);
++    const auto result = subdividePolygon(wide, CanonicalTileID(0, 0, 0), 8);
++    for (std::size_t i = 0; i + 2 < result.triangleIndices.size(); i += 3) {
++        bool inside = false;
++        for (std::size_t k = 0; k < 3; k++) {
++            const int16_t x = result.vertices[result.triangleIndices[i + k] * 2];
++            inside |= x >= 0 && x <= EXTENT;
++        }
++        EXPECT_TRUE(inside);
++    }
++    expectSoundMesh(result, true);
++}
++
++TEST(Subdivision, VertexLine) {
++    const GeometryCoordinates line{{0, 0}, {EXTENT, 0}};
++    EXPECT_EQ(line, subdivideVertexLine(line, 1));
++    const auto split = subdivideVertexLine(line, 4);
++    ASSERT_EQ(5u, split.size());
++    EXPECT_EQ(GeometryCoordinate(EXTENT / 4, 0), split[1]);
++    EXPECT_EQ(GeometryCoordinate(EXTENT, 0), split.back());
++
++    const GeometryCoordinates diagonal{{0, 0}, {EXTENT, EXTENT}};
++    const auto diagonalSplit = subdivideVertexLine(diagonal, 2);
++    ASSERT_EQ(3u, diagonalSplit.size());
++    EXPECT_EQ(GeometryCoordinate(EXTENT / 2, EXTENT / 2), diagonalSplit[1]);
++
++    const GeometryCoordinates ring{{0, 0}, {EXTENT, 0}, {EXTENT, EXTENT}};
++    const auto closed = subdivideVertexLine(ring, 1, true);
++    EXPECT_EQ(ring.front(), closed.back());
++    EXPECT_EQ(4u, closed.size());
++}
++
++TEST(Subdivision, WorldPolygonWithBufferIsSound) {
++    constexpr int16_t buffer = 512;
++    const auto world = square(-buffer, -buffer, EXTENT + buffer, EXTENT + buffer);
++    for (const uint8_t z : {0, 1}) {
++        const auto result = subdividePolygon(world, CanonicalTileID(z, 0, 0), 128u >> z);
++        expectSoundMesh(result, z == 0);
++    }
++}
++
++TEST(Subdivision, PolygonBeyondTheIndexLimitCoarsens) {
++    // A comb of 400 teeth hanging from a thin bar: 800 vertical edges each crossing 127 cell rows need more vertices
++    // than a 16-bit index space holds; the fallback halves the granularity until the polygon fits rather than
++    // dropping it.
++    GeometryCoordinates ring;
++    constexpr int16_t teeth = 400;
++    constexpr int16_t step = EXTENT / (teeth * 2);
++    constexpr int16_t bar = EXTENT - step;
++    for (int16_t i = 0; i < teeth; ++i) {
++        const auto x0 = static_cast<int16_t>(i * 2 * step);
++        const auto x1 = static_cast<int16_t>(x0 + step);
++        ring.emplace_back(x0, bar);
++        ring.emplace_back(x0, 0);
++        ring.emplace_back(x1, 0);
++        ring.emplace_back(x1, bar);
++    }
++    ring.emplace_back(EXTENT, bar);
++    ring.emplace_back(EXTENT, EXTENT);
++    ring.emplace_back(0, EXTENT);
++    ring.emplace_back(0, bar);
++    const GeometryCollection polygon{ring};
++    const CanonicalTileID tile(3, 4, 4);
++    constexpr std::size_t limit = std::numeric_limits<uint16_t>::max();
++
++    const auto full = subdividePolygon(polygon, tile, 128, false);
++    EXPECT_GT(full.vertices.size() / 2, limit);
++
++    // 800 edges crossing the cell rows: 128 and 64 both overflow, 32 is the first granularity that fits.
++    EXPECT_GT(subdividePolygon(polygon, tile, 64, false).vertices.size() / 2, limit);
++    const auto coarse = subdividePolygon(polygon, tile, 32, false);
++    EXPECT_LE(coarse.vertices.size() / 2, limit);
++
++    const auto fitted = subdividePolygonWithinLimit(polygon, tile, 128, false, limit);
++    EXPECT_EQ(coarse.vertices, fitted.vertices);
++    EXPECT_EQ(coarse.triangleIndices, fitted.triangleIndices);
++    EXPECT_EQ(coarse.lineIndexLists, fitted.lineIndexLists);
++    // The comb is about the vertex count; earcut's triangulation of it is not what is under test here.
++}
++
++TEST(TileMesh, QuadAndGrid) {
++    const auto quad = createTileMesh({.granularity = 1});
++    EXPECT_EQ(4u, quad.vertices.size() / 2);
++    EXPECT_EQ(6u, quad.indices.size());
++
++    const auto grid = createTileMesh({.granularity = 4, .generateBorders = true});
++    EXPECT_EQ(7u * 7u, grid.vertices.size() / 2);
++    EXPECT_EQ(6u * 6u * 6u, grid.indices.size());
++    EXPECT_EQ(-EXTENT / 128, grid.vertices[0]);
++    EXPECT_EQ(EXTENT + EXTENT / 128, grid.vertices[(7 * 7 - 1) * 2]);
++
++    const auto polar = createTileMesh({.granularity = 2, .extendToNorthPole = true, .extendToSouthPole = true});
++    EXPECT_EQ(3u * 5u, polar.vertices.size() / 2);
++    EXPECT_EQ(NORTH_POLE_Y, polar.vertices[1]);
++    EXPECT_EQ(SOUTH_POLE_Y, polar.vertices[(3 * 5 - 1) * 2 + 1]);
++    for (std::size_t i = 0; i + 2 < polar.indices.size(); i += 3) {
++        EXPECT_LT(signedArea(polar.vertices, polar.indices[i], polar.indices[i + 1], polar.indices[i + 2]), 0.0);
++    }
++}

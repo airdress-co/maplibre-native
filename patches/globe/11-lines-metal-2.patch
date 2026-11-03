@@ -1,0 +1,1437 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Carmack <johncarmack@me.com>
+Date: Wed, 26 Aug 2026 17:25:19 +0000
+Subject: [PATCH] Globe 11/13, phase 9, continued (2): lines on the globe on
+ Metal (continued)
+
+Imported from maplibre/maplibre-native#4533 at bec8a12440d0c8a3bd320f151e1b16de39285705,
+first-parent commits 284d488531..fe521d4068 (3).
+---
+ include/mln/shaders/gl/debug.hpp              |   2 +-
+ include/mln/shaders/gl/location_indicator.hpp |   2 +-
+ .../gl/location_indicator_textured.hpp        |   2 +-
+ include/mln/shaders/mtl/debug.hpp             |   6 +-
+ .../mln/shaders/mtl/location_indicator.hpp    |  10 +-
+ include/mln/shaders/vulkan/debug.hpp          |  10 +-
+ .../mln/shaders/vulkan/location_indicator.hpp |  26 ++--
+ include/mln/shaders/webgpu/debug.hpp          |  13 +-
+ .../mln/shaders/webgpu/location_indicator.hpp |  30 ++--
+ .../layers/custom_layer_render_parameters.hpp |  14 ++
+ metrics/ignores/platform-android.json         |   3 +-
+ metrics/ignores/platform-linux-opengl.json    |   1 +
+ metrics/ignores/platform-linux-vulkan.json    |  25 +---
+ metrics/ignores/windows-egl.json              |   3 +-
+ metrics/ignores/windows-opengl.json           |   3 +-
+ metrics/ignores/windows-vulkan.json           |  25 +---
+ .../globe/debug-tile-borders/expected.png     | Bin 0 -> 16081 bytes
+ .../globe/debug-tile-borders/style.json       |  40 ++++++
+ shaders/debug.vertex.glsl                     |   2 +-
+ shaders/location_indicator.vertex.glsl        |   2 +-
+ .../location_indicator_textured.vertex.glsl   |   2 +-
+ .../location_indicator_layer_tweaker.cpp      |  35 ++++-
+ .../location_indicator_layer_tweaker.hpp      |   9 +-
+ .../render_location_indicator_layer.cpp       |  27 +++-
+ src/mln/renderer/render_orchestrator.cpp      |   5 +-
+ .../renderer/sources/render_tile_source.cpp   | 130 +++++++++++++++---
+ .../layers/custom_layer_render_parameters.cpp |   8 ++
+ test/CMakeLists.txt                           |   1 +
+ test/api/custom_layer.test.cpp                |  18 ++-
+ test/api/location_indicator.test.cpp          |  97 +++++++++++++
+ 30 files changed, 433 insertions(+), 118 deletions(-)
+ create mode 100644 metrics/integration/render-tests/projection/globe/debug-tile-borders/expected.png
+ create mode 100644 metrics/integration/render-tests/projection/globe/debug-tile-borders/style.json
+ create mode 100644 test/api/location_indicator.test.cpp
+
+diff --git a/include/mln/shaders/gl/debug.hpp b/include/mln/shaders/gl/debug.hpp
+index 943f7cd9b6957a4ded49c2764f65bae279046229..7ea41008ec11d01dd5a70d9ac09974da3d6f1959 100644
+--- a/include/mln/shaders/gl/debug.hpp
++++ b/include/mln/shaders/gl/debug.hpp
+@@ -24,7 +24,7 @@ void main() {
+     // This vertex shader expects a EXTENT x EXTENT quad,
+     // The UV coordinates for the overlay texture can be calculated using that knowledge
+     v_uv = a_pos / 8192.0;
+-    gl_Position = u_matrix * vec4(a_pos * u_overlay_scale, 0, 1);
++    gl_Position = projectTile(a_pos * u_overlay_scale);
+ }
+ )";
+     static constexpr const char* fragment = R"(layout (std140) uniform DebugUBO {
+diff --git a/include/mln/shaders/gl/location_indicator.hpp b/include/mln/shaders/gl/location_indicator.hpp
+index 9a95c730e7c984e5ebdd3e0c0dbd27c1629abe93..5ba9178f3cbd63f19efb8e42392777c21fdd4846 100644
+--- a/include/mln/shaders/gl/location_indicator.hpp
++++ b/include/mln/shaders/gl/location_indicator.hpp
+@@ -16,7 +16,7 @@ struct ShaderSource<BuiltIn::LocationIndicatorShader, gfx::Backend::Type::OpenGL
+ layout(location = 0) in vec2 a_pos;
+ 
+ void main() {
+-    gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
++    gl_Position = projectTile(a_pos);
+ }
+ )";
+     static constexpr const char* fragment = R"(layout (std140) uniform LocationIndicatorDrawableUBO {
+diff --git a/include/mln/shaders/gl/location_indicator_textured.hpp b/include/mln/shaders/gl/location_indicator_textured.hpp
+index 2764321da53df49e60fb51801be492a7e5bafdf2..9f56960ef8ec29aae64a074db8346bff0ad22f4e 100644
+--- a/include/mln/shaders/gl/location_indicator_textured.hpp
++++ b/include/mln/shaders/gl/location_indicator_textured.hpp
+@@ -20,7 +20,7 @@ out vec2 frag_uv;
+ 
+ void main() {
+     frag_uv = a_uv;
+-    gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
++    gl_Position = projectTile(a_pos);
+ }
+ )";
+     static constexpr const char* fragment = R"(layout (std140) uniform LocationIndicatorDrawableUBO {
+diff --git a/include/mln/shaders/mtl/debug.hpp b/include/mln/shaders/mtl/debug.hpp
+index 0e1174b50dbc07a3f2f1ec69fa137f6b9e410bdb..332b2aead357c1cf6c70fab8f7785adc553de5bc 100644
+--- a/include/mln/shaders/mtl/debug.hpp
++++ b/include/mln/shaders/mtl/debug.hpp
+@@ -50,9 +50,11 @@ struct FragmentStage {
+ };
+ 
+ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+-                                device const DebugUBO& debug [[buffer(idDebugUBO)]]) {
++                                device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
++                                device const DebugUBO& debug [[buffer(idDebugUBO)]],
++                                device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]]) {
+ 
+-    const float4 position = debug.matrix * float4(float2(vertx.pos) * debug.overlay_scale, 0, 1);
++    const float4 position = projectTile(float2(vertx.pos) * debug.overlay_scale, projectionVector[uboIndex]);
+ 
+     // This vertex shader expects a EXTENT x EXTENT quad,
+     // The UV coordinates for the overlay texture can be calculated using that knowledge
+diff --git a/include/mln/shaders/mtl/location_indicator.hpp b/include/mln/shaders/mtl/location_indicator.hpp
+index 43d527dc1ee0fed3e7aafac07f3503f5da249d67..e09a8f8ae28554425fb882caa806d928528cc244 100644
+--- a/include/mln/shaders/mtl/location_indicator.hpp
++++ b/include/mln/shaders/mtl/location_indicator.hpp
+@@ -45,10 +45,11 @@ struct FragmentStage {
+ };
+ 
+ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+-                                device const LocationIndicatorDrawableUBO& drawable [[buffer(idLocationIndicatorUBO)]]) {
++                                device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
++                                device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]]) {
+ 
+     return {
+-        .position = drawable.matrix * float4(vertx.position, 1.0)
++        .position = projectTile(vertx.position, projectionVector[uboIndex])
+     };
+ }
+ 
+@@ -83,10 +84,11 @@ struct FragmentStage {
+ };
+ 
+ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+-                                device const LocationIndicatorDrawableUBO& drawable [[buffer(idLocationIndicatorUBO)]]) {
++                                device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
++                                device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]]) {
+ 
+     return {
+-        .position = drawable.matrix * float4(vertx.position, 1.0),
++        .position = projectTile(vertx.position, projectionVector[uboIndex]),
+         .uv = vertx.uv
+     };
+ }
+diff --git a/include/mln/shaders/vulkan/debug.hpp b/include/mln/shaders/vulkan/debug.hpp
+index d86a7ef15d094409b557c4c77729431fe646ca25..d6fa17f7401836fdbb6e4b28a1cc9547e2d38bb0 100644
+--- a/include/mln/shaders/vulkan/debug.hpp
++++ b/include/mln/shaders/vulkan/debug.hpp
+@@ -30,11 +30,19 @@ layout(set = DRAWABLE_UBO_SET_INDEX, binding = idDebugUBO) uniform DebugUBO {
+     float pad3;
+ } debug;
+ 
++layout(push_constant) uniform Constants {
++    int ubo_index;
++} constant;
++
++layout(std140, set = LAYER_SET_INDEX, binding = idProjectionUBO) readonly buffer ProjectionUBOVector {
++    ProjectionUBO projection_ubo[];
++} projectionVector;
++
+ layout(location = 0) out vec2 frag_uv;
+ 
+ void main() {
+ 
+-    gl_Position = debug.matrix * vec4(in_position * debug.overlay_scale, 0, 1);
++    gl_Position = projectTile(in_position * debug.overlay_scale, projectionVector.projection_ubo[constant.ubo_index]);
+     applySurfaceTransform();
+ 
+     // This vertex shader expects a EXTENT x EXTENT quad,
+diff --git a/include/mln/shaders/vulkan/location_indicator.hpp b/include/mln/shaders/vulkan/location_indicator.hpp
+index 9169eab94349cefd041033b7a19538bf66aa5e56..e94dff2cdbea7b1007c4cb8198a4ff7a72602c2a 100644
+--- a/include/mln/shaders/vulkan/location_indicator.hpp
++++ b/include/mln/shaders/vulkan/location_indicator.hpp
+@@ -20,13 +20,16 @@ struct ShaderSource<BuiltIn::LocationIndicatorShader, gfx::Backend::Type::Vulkan
+     static constexpr auto vertex = R"(
+ layout(location = 0) in vec2 in_position;
+ 
+-layout(set = DRAWABLE_UBO_SET_INDEX, binding = idLocationIndicatorDrawableUBO) uniform LocationIndicatorDrawableUBO {
+-    mat4 matrix;
+-    vec4 color;
+-} drawable;
++layout(push_constant) uniform Constants {
++    int ubo_index;
++} constant;
++
++layout(std140, set = LAYER_SET_INDEX, binding = idProjectionUBO) readonly buffer ProjectionUBOVector {
++    ProjectionUBO projection_ubo[];
++} projectionVector;
+ 
+ void main() {
+-    gl_Position = drawable.matrix * vec4(in_position, 0, 1);
++    gl_Position = projectTile(in_position, projectionVector.projection_ubo[constant.ubo_index]);
+     applySurfaceTransform();
+ }
+ )";
+@@ -58,15 +61,18 @@ struct ShaderSource<BuiltIn::LocationIndicatorTexturedShader, gfx::Backend::Type
+ layout(location = 0) in vec2 in_position;
+ layout(location = 1) in vec2 in_texcoord;
+ 
+-layout(set = DRAWABLE_UBO_SET_INDEX, binding = idLocationIndicatorDrawableUBO) uniform LocationIndicatorDrawableUBO {
+-    mat4 matrix;
+-    vec4 color;
+-} drawable;
++layout(push_constant) uniform Constants {
++    int ubo_index;
++} constant;
++
++layout(std140, set = LAYER_SET_INDEX, binding = idProjectionUBO) readonly buffer ProjectionUBOVector {
++    ProjectionUBO projection_ubo[];
++} projectionVector;
+ 
+ layout(location = 0) out vec2 frag_uv;
+ 
+ void main() {
+-    gl_Position = drawable.matrix * vec4(in_position, 0, 1);
++    gl_Position = projectTile(in_position, projectionVector.projection_ubo[constant.ubo_index]);
+     applySurfaceTransform();
+ 
+     frag_uv = in_texcoord;
+diff --git a/include/mln/shaders/webgpu/debug.hpp b/include/mln/shaders/webgpu/debug.hpp
+index 822ed6ba65c3b4e9e6bd80e0edd0f962db12b72d..9c07e13aab09071e6153a342d0f74474229c9a7e 100644
+--- a/include/mln/shaders/webgpu/debug.hpp
++++ b/include/mln/shaders/webgpu/debug.hpp
+@@ -33,14 +33,21 @@ struct DebugUBO {
+     pad3: f32,
+ };
+ 
+-@group(0) @binding(0) var<uniform> debug: DebugUBO;
++struct GlobalIndexUBO {
++    value: u32,
++    pad0: vec3<u32>,
++};
++
++@group(0) @binding(1) var<uniform> globalIndex: GlobalIndexUBO;
++@group(0) @binding(4) var<storage, read> projectionVector: array<ProjectionUBO>;
++@group(0) @binding(5) var<uniform> debug: DebugUBO;
+ 
+ @vertex
+ fn main(in: VertexInput) -> VertexOutput {
+     var out: VertexOutput;
+ 
+     let scaled_pos = vec2<f32>(f32(in.position.x), f32(in.position.y)) * debug.overlay_scale;
+-    out.position = debug.matrix * vec4<f32>(scaled_pos, 0.0, 1.0);
++    out.position = projectTile(scaled_pos, projectionVector[globalIndex.value]);
+ 
+     // This vertex shader expects a EXTENT x EXTENT quad,
+     // The UV coordinates for the overlay texture can be calculated using that knowledge
+@@ -64,7 +71,7 @@ struct DebugUBO {
+     pad3: f32,
+ };
+ 
+-@group(0) @binding(0) var<uniform> debug: DebugUBO;
++@group(0) @binding(5) var<uniform> debug: DebugUBO;
+ @group(1) @binding(0) var texture_sampler: sampler;
+ @group(1) @binding(1) var overlay_texture: texture_2d<f32>;
+ 
+diff --git a/include/mln/shaders/webgpu/location_indicator.hpp b/include/mln/shaders/webgpu/location_indicator.hpp
+index 2cc9d4617a74c71f650f8ab6b4388b67084e3db2..ab1c472c42112266dea8a7cad65d7206a6152b15 100644
+--- a/include/mln/shaders/webgpu/location_indicator.hpp
++++ b/include/mln/shaders/webgpu/location_indicator.hpp
+@@ -23,17 +23,18 @@ struct VertexOutput {
+     @builtin(position) position: vec4<f32>,
+ };
+ 
+-struct LocationIndicatorUBO {
+-    matrix: mat4x4<f32>,
+-    color: vec4<f32>,
++struct GlobalIndexUBO {
++    value: u32,
++    pad0: vec3<u32>,
+ };
+ 
+-@group(0) @binding(4) var<uniform> ubo: LocationIndicatorUBO;
++@group(0) @binding(1) var<uniform> globalIndex: GlobalIndexUBO;
++@group(0) @binding(4) var<storage, read> projectionVector: array<ProjectionUBO>;
+ 
+ @vertex
+ fn main(in: VertexInput) -> VertexOutput {
+     var out: VertexOutput;
+-    out.position = ubo.matrix * vec4<f32>(in.position, 0.0, 1.0);
++    out.position = projectTile(in.position, projectionVector[globalIndex.value]);
+     return out;
+ }
+ )";
+@@ -44,7 +45,7 @@ struct LocationIndicatorUBO {
+     color: vec4<f32>,
+ };
+ 
+-@group(0) @binding(4) var<uniform> ubo: LocationIndicatorUBO;
++@group(0) @binding(5) var<uniform> ubo: LocationIndicatorUBO;
+ 
+ @fragment
+ fn main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+@@ -71,17 +72,18 @@ struct VertexOutput {
+     @location(0) uv: vec2<f32>,
+ };
+ 
+-struct LocationIndicatorUBO {
+-    matrix: mat4x4<f32>,
+-    color: vec4<f32>,
++struct GlobalIndexUBO {
++    value: u32,
++    pad0: vec3<u32>,
+ };
+ 
+-@group(0) @binding(4) var<uniform> ubo: LocationIndicatorUBO;
++@group(0) @binding(1) var<uniform> globalIndex: GlobalIndexUBO;
++@group(0) @binding(4) var<storage, read> projectionVector: array<ProjectionUBO>;
+ 
+ @vertex
+ fn main(in: VertexInput) -> VertexOutput {
+     var out: VertexOutput;
+-    out.position = ubo.matrix * vec4<f32>(in.position, 0.0, 1.0);
++    out.position = projectTile(in.position, projectionVector[globalIndex.value]);
+     out.uv = in.uv;
+     return out;
+ }
+@@ -93,9 +95,9 @@ struct LocationIndicatorUBO {
+     color: vec4<f32>,
+ };
+ 
+-@group(0) @binding(4) var<uniform> ubo: LocationIndicatorUBO;
+-@group(0) @binding(1) var colorTexture: texture_2d<f32>;
+-@group(0) @binding(2) var colorSampler: sampler;
++@group(0) @binding(5) var<uniform> ubo: LocationIndicatorUBO;
++@group(1) @binding(0) var colorSampler: sampler;
++@group(1) @binding(1) var colorTexture: texture_2d<f32>;
+ 
+ @fragment
+ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+diff --git a/include/mln/style/layers/custom_layer_render_parameters.hpp b/include/mln/style/layers/custom_layer_render_parameters.hpp
+index b78065ac02c4b1befba16271db4d304510c2875c..48725d4ceede6a472148118b8a325259ccafd7e7 100644
+--- a/include/mln/style/layers/custom_layer_render_parameters.hpp
++++ b/include/mln/style/layers/custom_layer_render_parameters.hpp
+@@ -30,6 +30,20 @@ struct CustomLayerRenderParameters {
+     /// A 4×4 matrix representing the map view’s current near clip projection state.
+     std::array<double, 16> nearClippedProjectionMatrix;
+ 
++    /// Whether the map is drawn as a globe. The matrices above are then the Mercator fallback the globe blends
++    /// towards; geometry meant to sit on the sphere goes through `globeProjectionMatrix` instead.
++    bool globe;
++
++    /// 1 on the globe, 0 on Mercator, in between while the projection blends.
++    double projectionTransition;
++
++    /// Unit-sphere positions (x towards 90°E, y towards the north pole, z towards null island) to clip space; on
++    /// Mercator, the tile matrix of the world.
++    std::array<double, 16> globeProjectionMatrix;
++
++    /// The plane behind which sphere positions are on the far side of the globe: `dot(position, xyz) + w < 0`.
++    std::array<double, 4> globeClippingPlane;
++
+     CustomLayerRenderParameters(const PaintParameters&);
+ };
+ 
+diff --git a/metrics/ignores/platform-android.json b/metrics/ignores/platform-android.json
+index bebfa71926fddc3e00ea7757d3dbc23f8f687d82..1ee45d011ad3272a013c29ce5fe97692bb77ac5b 100644
+--- a/metrics/ignores/platform-android.json
++++ b/metrics/ignores/platform-android.json
+@@ -47,5 +47,6 @@
+     "render-tests/projection/globe/fill-planet-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/line-gradient": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/line-pattern": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/raster-warped": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
++    "render-tests/projection/globe/raster-warped": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/debug-tile-borders": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/platform-linux-opengl.json b/metrics/ignores/platform-linux-opengl.json
+index 751583d1732ff6d3e30e0062c97f41a8bdc365b8..98a37aab7ab864b88a5f3658674279269fed97ff 100644
+--- a/metrics/ignores/platform-linux-opengl.json
++++ b/metrics/ignores/platform-linux-opengl.json
+@@ -1,4 +1,5 @@
+ {
++  "render-tests/projection/globe/debug-tile-borders": "The tile border is a hardware wide line on OpenGL and an anti-aliased polyline in the Metal expectation.",
+   "render-tests/projection/globe/fill-grid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+   "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+   "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+diff --git a/metrics/ignores/platform-linux-vulkan.json b/metrics/ignores/platform-linux-vulkan.json
+index 6b5f66cd3e28ee02b6d5a0204992e534c0087b0e..7b420675993acf8e135d0a22244d791ad382e372 100644
+--- a/metrics/ignores/platform-linux-vulkan.json
++++ b/metrics/ignores/platform-linux-vulkan.json
+@@ -2,28 +2,7 @@
+   "render-tests/fill-extrusion-color/function": "Layer Z Fighting: https://github.com/maplibre/maplibre-native/issues/1847",
+   "render-tests/tilejson-bounds/default": "flaky on CI",
+   "render-tests/icon-text-fit/textFit-grid-long": "Needs to be investigated",
+-  "render-tests/projection/globe/fill-planet-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++  "render-tests/projection/globe/fill-planet-pole": "fill outline anti-aliasing differs from the Metal expectation",
+   "render-tests/projection/globe/fill-planet-tiles": "fill outline anti-aliasing differs from the Metal expectation",
+-  "render-tests/projection/globe/fill-grid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/background": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-planet-solid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/line-spiral": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/line-dasharray": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/text-line-equator": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-pitch-alignment/map-scale-map": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-pitch-alignment/map-scale-viewport": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-pitch-alignment/viewport-scale-map": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-pitch-alignment/viewport-scale-viewport": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-planet": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/heatmap": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/text-point-pole-to-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/text-pitched-rotated": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/icon-text-translate-map": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/icon-text-translate-viewport": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/hillshade": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/raster-planet": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/raster-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/raster-warped": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-extrusion": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
++  "render-tests/projection/globe/debug-tile-borders": "the tile border is a hardware wide line here and an anti-aliased polyline in the Metal expectation"
+ }
+diff --git a/metrics/ignores/windows-egl.json b/metrics/ignores/windows-egl.json
+index 64406420a2d1a06b37c1949ccaa059942318a0d7..7f1de4b97cd67c508776411065942d546dcfaefc 100644
+--- a/metrics/ignores/windows-egl.json
++++ b/metrics/ignores/windows-egl.json
+@@ -37,5 +37,6 @@
+     "render-tests/projection/globe/fill-planet-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/line-gradient": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/line-pattern": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/raster-warped": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
++    "render-tests/projection/globe/raster-warped": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/debug-tile-borders": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/windows-opengl.json b/metrics/ignores/windows-opengl.json
+index b2a2ac2e2451b153998fdd241107b4b235d9543f..f5a6c854abb269a2421a08e960d3fd9c7cb76789 100644
+--- a/metrics/ignores/windows-opengl.json
++++ b/metrics/ignores/windows-opengl.json
+@@ -37,5 +37,6 @@
+     "render-tests/projection/globe/fill-planet-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/line-gradient": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/line-pattern": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/raster-warped": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
++    "render-tests/projection/globe/raster-warped": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/debug-tile-borders": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/windows-vulkan.json b/metrics/ignores/windows-vulkan.json
+index 23e394a350e871394cc4e56caaa6b793852591b5..2a0eb4c0fd2b2441b6b1b1f8d8575c9c60fe021f 100644
+--- a/metrics/ignores/windows-vulkan.json
++++ b/metrics/ignores/windows-vulkan.json
+@@ -4,28 +4,7 @@
+     "render-tests/icon-text-fit/textFit-grid-long": "Needs investigation (Diff: 0.00507716049382716)",
+     "render-tests/regressions/mapbox-gl-js#5642": "Needs investigation (Diff: 0.01416015625)",
+     "render-tests/regressions/mapbox-gl-js#7066": "Needs investigation (Diff: 0.0002777777777777778)",
+-    "render-tests/projection/globe/fill-planet-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/fill-planet-pole": "fill outline anti-aliasing differs from the Metal expectation",
+     "render-tests/projection/globe/fill-planet-tiles": "fill outline anti-aliasing differs from the Metal expectation",
+-    "render-tests/projection/globe/fill-grid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/background": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/fill-planet-solid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/line-spiral": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/line-dasharray": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/text-line-equator": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/circle-pitch-alignment/map-scale-map": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/circle-pitch-alignment/map-scale-viewport": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/circle-pitch-alignment/viewport-scale-map": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/circle-pitch-alignment/viewport-scale-viewport": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/circle-planet": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/heatmap": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/text-point-pole-to-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/text-pitched-rotated": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/icon-text-translate-map": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/icon-text-translate-viewport": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/hillshade": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/raster-planet": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/raster-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/raster-warped": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/fill-extrusion": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
++    "render-tests/projection/globe/debug-tile-borders": "the tile border is a hardware wide line here and an anti-aliased polyline in the Metal expectation"
+ }
+diff --git a/metrics/integration/render-tests/projection/globe/debug-tile-borders/expected.png b/metrics/integration/render-tests/projection/globe/debug-tile-borders/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd82ce5eb1900fb282b53a921930a2a7044111bb
+GIT binary patch
+literal 16081
+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
+E0h}c9G5`Po
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/integration/render-tests/projection/globe/debug-tile-borders/style.json b/metrics/integration/render-tests/projection/globe/debug-tile-borders/style.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..3be9f2619ac320bf6648b100244d4f0a2c0bc600
+--- /dev/null
++++ b/metrics/integration/render-tests/projection/globe/debug-tile-borders/style.json
+@@ -0,0 +1,40 @@
++{
++  "version": 8,
++  "metadata": {
++    "test": {
++      "description": "Tile borders on the globe: the red edges of the zoom 2 tiles follow the sphere, the equator and the 66.5°N row bending across the disc and the 0° and 90°E meridians curving toward the pole; a straight chord between corners would cut through the planet.",
++      "debug": true,
++      "width": 512,
++      "height": 512
++    }
++  },
++  "center": [30.0, 20.0],
++  "zoom": 2,
++  "projection": {"type": "globe"},
++  "sources": {
++    "world": {
++      "type": "geojson",
++      "data": {
++        "type": "Feature",
++        "properties": {},
++        "geometry": {
++          "type": "Polygon",
++          "coordinates": [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]]
++        }
++      }
++    }
++  },
++  "layers": [
++    {
++      "id": "background",
++      "type": "background",
++      "paint": {"background-color": "white"}
++    },
++    {
++      "id": "world",
++      "type": "fill",
++      "source": "world",
++      "paint": {"fill-color": "#dddddd"}
++    }
++  ]
++}
+diff --git a/shaders/debug.vertex.glsl b/shaders/debug.vertex.glsl
+index c8cf0171f110ea0c6acfcc41db4ad8f8f4124e7d..e742cb04309263e29503e7006b986195224760e6 100644
+--- a/shaders/debug.vertex.glsl
++++ b/shaders/debug.vertex.glsl
+@@ -14,5 +14,5 @@ void main() {
+     // This vertex shader expects a EXTENT x EXTENT quad,
+     // The UV coordinates for the overlay texture can be calculated using that knowledge
+     v_uv = a_pos / 8192.0;
+-    gl_Position = u_matrix * vec4(a_pos * u_overlay_scale, 0, 1);
++    gl_Position = projectTile(a_pos * u_overlay_scale);
+ }
+diff --git a/shaders/location_indicator.vertex.glsl b/shaders/location_indicator.vertex.glsl
+index 045634b387deecf33af6fe9e5ecd92c1bb15ff3e..6b6831eaf1bfe3af90240676c6dbaa905f901475 100644
+--- a/shaders/location_indicator.vertex.glsl
++++ b/shaders/location_indicator.vertex.glsl
+@@ -6,5 +6,5 @@ layout (std140) uniform LocationIndicatorDrawableUBO {
+ layout(location = 0) in vec2 a_pos;
+ 
+ void main() {
+-    gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
++    gl_Position = projectTile(a_pos);
+ }
+diff --git a/shaders/location_indicator_textured.vertex.glsl b/shaders/location_indicator_textured.vertex.glsl
+index e577f419d63e09f7b877ffbf63f8210c0e032316..82a83ee4c2807bb1c276653dc535376b4d6011f8 100644
+--- a/shaders/location_indicator_textured.vertex.glsl
++++ b/shaders/location_indicator_textured.vertex.glsl
+@@ -10,5 +10,5 @@ out vec2 frag_uv;
+ 
+ void main() {
+     frag_uv = a_uv;
+-    gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
++    gl_Position = projectTile(a_pos);
+ }
+diff --git a/src/mln/renderer/layers/location_indicator_layer_tweaker.cpp b/src/mln/renderer/layers/location_indicator_layer_tweaker.cpp
+index a3d8f7c4e41100261f9dee70598bd6aa728c8b43..fc075e541144ac5268bedb2f805a2a5b866be925 100644
+--- a/src/mln/renderer/layers/location_indicator_layer_tweaker.cpp
++++ b/src/mln/renderer/layers/location_indicator_layer_tweaker.cpp
+@@ -1,10 +1,12 @@
+ #include <mln/renderer/layers/location_indicator_layer_tweaker.hpp>
+ 
++#include <mln/map/transform_state.hpp>
+ #include <mln/renderer/layer_group.hpp>
+ #include <mln/renderer/paint_parameters.hpp>
+ #include <mln/renderer/layers/render_location_indicator_layer.hpp>
+ #include <mln/style/layers/location_indicator_layer_properties.hpp>
+ #include <mln/shaders/location_indicator_ubo.hpp>
++#include <mln/util/projection.hpp>
+ 
+ namespace mln {
+ 
+@@ -17,6 +19,22 @@ void LocationIndicatorLayerTweaker::execute(LayerGroupBase& layerGroup, const Pa
+     }
+ 
+     const auto& props = static_cast<const LocationIndicatorLayerProperties&>(*evaluatedProperties);
++    const auto& state = params.state;
++
++    // A "tile" one world pixel wide with its origin at the puck, so the sphere gets the offsets as-is.
++    const double worldSize = Projection::worldSize(state.getScale());
++    const vec4 puckMercatorCoords{
++        {positionMercator.x / worldSize, positionMercator.y / worldSize, 1.0 / worldSize, 1.0 / worldSize}};
++    const auto projectionFor = [&](const mat4& fallbackMatrix) {
++        auto data = state.getProjectionDataForMatrix(UnwrappedTileID{0, 0, 0}, fallbackMatrix);
++        data.tileMercatorCoords = puckMercatorCoords;
++        return toProjectionUBO(data);
++    };
++
++#if MLN_UBO_CONSOLIDATION
++    int i = 0;
++    std::vector<ProjectionUBO> projectionUBOVector(layerGroup.getDrawableCount());
++#endif
+ 
+     visitLayerGroupDrawables(layerGroup, [&](gfx::Drawable& drawable) {
+         auto& drawableUniforms = drawable.mutableUniformBuffers();
+@@ -25,7 +43,18 @@ void LocationIndicatorLayerTweaker::execute(LayerGroupBase& layerGroup, const Pa
+             return;
+         }
+ 
+-        switch (static_cast<RenderLocationIndicatorLayer::LocationIndicatorComponentType>(drawable.getType())) {
++        const auto type = static_cast<RenderLocationIndicatorLayer::LocationIndicatorComponentType>(drawable.getType());
++        const bool isCircle = type == RenderLocationIndicatorLayer::LocationIndicatorComponentType::Circle ||
++                              type == RenderLocationIndicatorLayer::LocationIndicatorComponentType::CircleOutline;
++        const auto projectionUBO = projectionFor(isCircle ? projectionCircle : projectionPuck);
++#if MLN_UBO_CONSOLIDATION
++        projectionUBOVector[i] = projectionUBO;
++        drawable.setUBOIndex(i++);
++#else
++        drawableUniforms.createOrUpdate(idProjectionUBO, &projectionUBO, params.context);
++#endif
++
++        switch (type) {
+             case RenderLocationIndicatorLayer::LocationIndicatorComponentType::Circle: {
+                 LocationIndicatorDrawableUBO drawableUBO = {.matrix = util::cast<float>(projectionCircle),
+                                                             .color = props.evaluated.get<AccuracyRadiusColor>()};
+@@ -56,6 +85,10 @@ void LocationIndicatorLayerTweaker::execute(LayerGroupBase& layerGroup, const Pa
+                 break;
+         }
+     });
++
++#if MLN_UBO_CONSOLIDATION
++    uploadProjectionUBOs(layerGroup.mutableUniformBuffers(), projectionUBOVector, params.context);
++#endif
+ }
+ 
+ } // namespace mln
+diff --git a/src/mln/renderer/layers/location_indicator_layer_tweaker.hpp b/src/mln/renderer/layers/location_indicator_layer_tweaker.hpp
+index cbe442107d4b6c71a4f2c3eb97fd7841fbbec543..9f559a02597e163084cc8002a86472160aecc435 100644
+--- a/src/mln/renderer/layers/location_indicator_layer_tweaker.hpp
++++ b/src/mln/renderer/layers/location_indicator_layer_tweaker.hpp
+@@ -2,6 +2,7 @@
+ 
+ #include <mln/renderer/layer_tweaker.hpp>
+ #include <mln/gfx/uniform_buffer.hpp>
++#include <mln/util/geometry.hpp>
+ 
+ #include <string>
+ 
+@@ -15,10 +16,12 @@ public:
+     LocationIndicatorLayerTweaker(std::string id_,
+                                   Immutable<style::LayerProperties> properties,
+                                   const mln::mat4& projectionCircle_,
+-                                  const mln::mat4& projectionPuck_)
++                                  const mln::mat4& projectionPuck_,
++                                  const Point<double>& positionMercator_)
+         : LayerTweaker(std::move(id_), properties),
+           projectionCircle(projectionCircle_),
+-          projectionPuck(projectionPuck_) {}
++          projectionPuck(projectionPuck_),
++          positionMercator(positionMercator_) {}
+ 
+ public:
+     ~LocationIndicatorLayerTweaker() override = default;
+@@ -28,6 +31,8 @@ public:
+ private:
+     const mln::mat4& projectionCircle;
+     const mln::mat4& projectionPuck;
++    /// The puck in world pixels; the drawables' vertices are offsets from it.
++    const Point<double>& positionMercator;
+ };
+ 
+ } // namespace mln
+diff --git a/src/mln/renderer/layers/render_location_indicator_layer.cpp b/src/mln/renderer/layers/render_location_indicator_layer.cpp
+index 7e537fb9b53dcbab88585a176fe260d347375e69..a6aec4ce4783650ba9887cdd34c7602d761f5122 100644
+--- a/src/mln/renderer/layers/render_location_indicator_layer.cpp
++++ b/src/mln/renderer/layers/render_location_indicator_layer.cpp
+@@ -522,7 +522,7 @@ public:
+ #endif
+ 
+         projectionCircle = params.projectionMatrix;
+-        const Point<double> positionMercator = project(params.puckPosition, *params.state);
++        positionMercator = project(params.puckPosition, *params.state);
+         matrix::identity(translation);
+         matrix::translate(translation, translation, positionMercator.x, positionMercator.y, 0.0);
+         matrix::multiply(projectionCircle, projectionCircle, translation);
+@@ -569,6 +569,7 @@ public:
+ 
+     const auto& getProjectionCircle() const { return projectionCircle; }
+     const auto& getProjectionPuck() const { return projectionPuck; }
++    const auto& getPositionMercator() const { return positionMercator; }
+ 
+     auto getPuckGeometry() const {
+ #ifdef MLN_DRAWABLE_LOCATION_INDICATOR
+@@ -878,6 +879,7 @@ protected:
+     mln::mat4 translation{};
+     mln::mat4 projectionCircle{};
+     mln::mat4 projectionPuck{};
++    Point<double> positionMercator{};
+ 
+     bool positionChanged = false;
+     bool radiusChanged = false;
+@@ -1071,7 +1073,7 @@ void RenderLocationIndicatorLayer::captureRenderedFeatures() {
+ 
+ void RenderLocationIndicatorLayer::update(gfx::ShaderRegistry& shaders,
+                                           gfx::Context& context,
+-                                          const TransformState&,
++                                          const TransformState& state,
+                                           const std::shared_ptr<UpdateParameters>& updateParameters,
+                                           [[maybe_unused]] const PaintParameters& paintParameters,
+                                           const RenderTree&,
+@@ -1086,9 +1088,17 @@ void RenderLocationIndicatorLayer::update(gfx::ShaderRegistry& shaders,
+         return;
+     }
+ 
++    if (updateProjectionVariant(state)) {
++        quadShader.reset();
++        circleShader.reset();
++        // the drawables were built with the other projection's shaders
++        if (layerGroup) {
++            static_cast<LayerGroup*>(layerGroup.get())->clearDrawables();
++        }
++    }
++
+     if (!quadShader) {
+-        quadShader = context.getGenericShader(
+-            shaders, "LocationIndicatorTexturedShader", gfx::ProjectionVariant::Mercator);
++        quadShader = context.getGenericShader(shaders, "LocationIndicatorTexturedShader", projectionVariant);
+     }
+ 
+     if (!quadShader) {
+@@ -1097,7 +1107,7 @@ void RenderLocationIndicatorLayer::update(gfx::ShaderRegistry& shaders,
+     }
+ 
+     if (!circleShader) {
+-        circleShader = context.getGenericShader(shaders, "LocationIndicatorShader", gfx::ProjectionVariant::Mercator);
++        circleShader = context.getGenericShader(shaders, "LocationIndicatorShader", projectionVariant);
+     }
+ 
+     if (!circleShader) {
+@@ -1114,8 +1124,11 @@ void RenderLocationIndicatorLayer::update(gfx::ShaderRegistry& shaders,
+     }
+ 
+     if (!layerTweaker) {
+-        layerTweaker = std::make_shared<LocationIndicatorLayerTweaker>(
+-            getID(), evaluatedProperties, renderImpl->getProjectionCircle(), renderImpl->getProjectionPuck());
++        layerTweaker = std::make_shared<LocationIndicatorLayerTweaker>(getID(),
++                                                                       evaluatedProperties,
++                                                                       renderImpl->getProjectionCircle(),
++                                                                       renderImpl->getProjectionPuck(),
++                                                                       renderImpl->getPositionMercator());
+         layerGroup->addLayerTweaker(layerTweaker);
+     }
+ 
+diff --git a/src/mln/renderer/render_orchestrator.cpp b/src/mln/renderer/render_orchestrator.cpp
+index 1f360e40e0ffdd9a6b75f81b4f2efc9221da08da..2ccd1f1b417e22350b85aa4943a5e43052a4604d 100644
+--- a/src/mln/renderer/render_orchestrator.cpp
++++ b/src/mln/renderer/render_orchestrator.cpp
+@@ -20,6 +20,7 @@
+ #include <mln/renderer/query.hpp>
+ #include <mln/renderer/image_manager.hpp>
+ #include <mln/geometry/line_atlas.hpp>
++#include <mln/style/layers/custom_layer_impl.hpp>
+ #include <mln/style/source_impl.hpp>
+ #include <mln/style/transition_options.hpp>
+ #include <mln/text/glyph_manager.hpp>
+@@ -1039,7 +1040,9 @@ void RenderOrchestrator::updateLayers(gfx::ShaderRegistry& shaders,
+     for (const auto& item : items) {
+         auto& renderLayer = item.layer.get();
+         const auto& layerId = renderLayer.getId();
+-        has3D = has3D || renderLayer.is3D();
++        // A custom layer may draw 3D geometry, and the planet's depth is what hides it behind the horizon.
++        has3D = has3D || renderLayer.is3D() ||
++                renderLayer.baseImpl->getTypeInfo() == style::CustomLayer::Impl::staticTypeInfo();
+ #if MLN_RENDER_BACKEND_OPENGL
+         // Android Emulator: Goldfish is *very* broken. This will prevent a crash
+         // inside the GL translation layer at the cost of emulator performance.
+diff --git a/src/mln/renderer/sources/render_tile_source.cpp b/src/mln/renderer/sources/render_tile_source.cpp
+index ed930143f1f4f05471674292d7a710095eadf896..73ed42179199c253c2818b5633d5a3c1504495f8 100644
+--- a/src/mln/renderer/sources/render_tile_source.cpp
++++ b/src/mln/renderer/sources/render_tile_source.cpp
+@@ -25,6 +25,9 @@
+ #include <mln/shaders/line_layer_ubo.hpp>
+ #include <mln/gfx/drawable_tweaker.hpp>
+ #include <mln/renderer/layer_tweaker.hpp>
++#include <mln/util/subdivision_granularity.hpp>
++
++#include <map>
+ 
+ #if MLN_RENDER_BACKEND_METAL || MLN_RENDER_BACKEND_WEBGPU || (MLN_RENDER_BACKEND_VULKAN && defined(__ANDROID__))
+ #define MLN_ENABLE_POLYLINE_DRAWABLES 1
+@@ -185,8 +188,11 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
+ 
+     // initialize debug builder
+     constexpr auto DebugShaderName = "DebugShader";
++    const bool globe = parameters.state.isGlobeRendering();
+     gfx::ShaderProgramBasePtr debugShader = context.getGenericShader(
+-        shaders, std::string(DebugShaderName), gfx::ProjectionVariant::Mercator);
++        shaders,
++        std::string(DebugShaderName),
++        globe ? gfx::ProjectionVariant::Globe : gfx::ProjectionVariant::Mercator);
+     if (!debugShader) {
+         return;
+     }
+@@ -218,7 +224,8 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
+              idLineGapWidthVertexAttribute,
+              idLineOffsetVertexAttribute,
+              idLineWidthVertexAttribute}};
+-        return shaderGroup->getOrCreateShader(context, propertiesAsUniforms, gfx::ProjectionVariant::Mercator);
++        return shaderGroup->getOrCreateShader(
++            context, propertiesAsUniforms, globe ? gfx::ProjectionVariant::Globe : gfx::ProjectionVariant::Mercator);
+     };
+ 
+     std::unique_ptr<gfx::DrawableBuilder> polylineBuilder;
+@@ -269,6 +276,87 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
+                                           .wrapV = gfx::TextureWrapType::Clamp});
+     }
+ 
++    // a drawable built for the other projection keeps its shader; it goes with the tiles that left
++    const auto staleWith = [&](const gfx::Shader* shader) {
++        return [&, shader](const gfx::Drawable& drawable) {
++            return drawable.getName() == drawableName &&
++                   (!(drawable.getTileID().has_value() && newTiles.contains(*drawable.getTileID())) ||
++                    drawable.getShader().get() != shader);
++        };
++    };
++
++    struct Border {
++        std::vector<gfx::Vertex<PositionOnlyLayoutAttributes>> vertices;
++        std::vector<uint16_t> indexes;
++        SegmentVector segments;
++    };
++    const Border tileBorder{.vertices = RenderStaticData::tileVertices().vector(),
++                            .indexes = RenderStaticData::tileLineStripIndices().vector(),
++                            .segments = RenderStaticData::tileBorderSegments()};
++    // On the globe the edges bend with the sphere: a ring at the tile mesh's granularity, one per zoom.
++    std::map<uint8_t, Border> globeBorders;
++    const auto borderFor = [&](const OverscaledTileID& tileID) -> const Border& {
++        if (!globe) {
++            return tileBorder;
++        }
++        const auto z = tileID.canonical.z;
++        auto it = globeBorders.find(z);
++        if (it == globeBorders.end()) {
++            const auto steps = static_cast<int32_t>(
++                SubdivisionGranularitySetting::globe().tile.getGranularityForZoomLevel(z));
++            Border ring;
++            const auto add = [&](int32_t x, int32_t y) {
++                ring.indexes.push_back(static_cast<uint16_t>(ring.vertices.size()));
++                ring.vertices.emplace_back(
++                    gfx::Vertex<PositionOnlyLayoutAttributes>({{{static_cast<int16_t>(x), static_cast<int16_t>(y)}}}));
++            };
++            for (int32_t i = 0; i < steps; ++i) add(util::EXTENT * i / steps, 0);
++            for (int32_t i = 0; i < steps; ++i) add(util::EXTENT, util::EXTENT * i / steps);
++            for (int32_t i = 0; i < steps; ++i) add(util::EXTENT - util::EXTENT * i / steps, util::EXTENT);
++            for (int32_t i = 0; i < steps; ++i) add(0, util::EXTENT - util::EXTENT * i / steps);
++            ring.indexes.push_back(0);
++            ring.segments.emplace_back(0, 0, ring.vertices.size(), ring.indexes.size());
++            it = globeBorders.emplace(z, std::move(ring)).first;
++        }
++        return it->second;
++    };
++
++    // every debug drawable projects through the tile's projection block
++    const auto uploadProjections = [&](TileLayerGroup* tileLayerGroup) {
++#if MLN_UBO_CONSOLIDATION
++        std::vector<ProjectionUBO> projectionUBOs;
++        projectionUBOs.reserve(tileLayerGroup->getDrawableCount());
++        tileLayerGroup->visitDrawables([&](gfx::Drawable& drawable) {
++            if (!drawable.getTileID()) {
++                return;
++            }
++            drawable.setUBOIndex(static_cast<int32_t>(projectionUBOs.size()));
++            projectionUBOs.push_back(
++                LayerTweaker::toProjectionUBO(parameters.projectionDataForTile(drawable.getTileID()->toUnwrapped())));
++        });
++        if (projectionUBOs.empty()) {
++            return;
++        }
++        const std::size_t size = sizeof(ProjectionUBO) * projectionUBOs.size();
++        auto& layerUniforms = tileLayerGroup->mutableUniformBuffers();
++        const auto& buffer = layerUniforms.get(idProjectionUBO);
++        if (!buffer || buffer->getSize() < size) {
++            layerUniforms.set(idProjectionUBO, context.createUniformBuffer(projectionUBOs.data(), size, false, true));
++        } else {
++            buffer->update(projectionUBOs.data(), size);
++        }
++#else
++        tileLayerGroup->visitDrawables([&](gfx::Drawable& drawable) {
++            if (!drawable.getTileID()) {
++                return;
++            }
++            const auto projectionUBO = LayerTweaker::toProjectionUBO(
++                parameters.projectionDataForTile(drawable.getTileID()->toUnwrapped()));
++            drawable.mutableUniformBuffers().createOrUpdate(idProjectionUBO, &projectionUBO, context);
++        });
++#endif
++    };
++
+     // function to update existing tile drawables with UBO value. return number of updated drawables
+     const auto updateDrawables =
+         [&](TileLayerGroup* tileLayerGroup, const OverscaledTileID& tileID, const DebugUBO& debugUBO) -> size_t {
+@@ -323,7 +411,13 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
+ 
+     // function to add polylines drawable
+     const auto addPolylineDrawable = [&](TileLayerGroup* tileLayerGroup, const RenderTile& tile) {
+-        GeometryCoordinates coords{{0, 0}, {util::EXTENT, 0}, {util::EXTENT, util::EXTENT}, {0, util::EXTENT}, {0, 0}};
++        const auto& border = borderFor(tile.getOverscaledTileID());
++        GeometryCoordinates coords;
++        coords.reserve(border.indexes.size());
++        for (const auto index : border.indexes) {
++            const auto& position = border.vertices[index].a1;
++            coords.emplace_back(position[0], position[1]);
++        }
+         gfx::PolylineGeneratorOptions options;
+         options.type = FeatureType::Polygon;
+ 
+@@ -356,10 +450,7 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
+ 
+         // erase drawables that are not in the current tile set
+         for (auto& lg : {outlineLayerGroup, textLayerGroup}) {
+-            lg->removeDrawablesIf([&](gfx::Drawable& drawable) {
+-                return drawable.getName() == drawableName &&
+-                       !(drawable.getTileID().has_value() && newTiles.contains(*drawable.getTileID()));
+-            });
++            lg->removeDrawablesIf(staleWith(debugShader.get()));
+         }
+ 
+         // add new drawables and update existing ones
+@@ -400,6 +491,8 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
+                             debugBucket->segments);
+             }
+         }
++        uploadProjections(outlineLayerGroup);
++        uploadProjections(textLayerGroup);
+     } else {
+         // tile texts are not required, erase layer groups
+         debugLayerGroups.erase(DebugType::TextOutline);
+@@ -412,15 +505,14 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
+             addOrGetLayerGroupForType(DebugType::Border, "debug-border")->second.get());
+ 
+         // erase drawables that are not in the current tile set
+-        tileLayerGroup->removeDrawablesIf([&](gfx::Drawable& drawable) {
+-            return drawable.getName() == drawableName &&
+-                   !(drawable.getTileID().has_value() && newTiles.contains(*drawable.getTileID()));
+-        });
++#if MLN_ENABLE_POLYLINE_DRAWABLES
++        if (!polylineShader) polylineShader = createPolylineShader();
++        tileLayerGroup->removeDrawablesIf(staleWith(polylineShader.get()));
++#else
++        tileLayerGroup->removeDrawablesIf(staleWith(debugShader.get()));
++#endif
+ 
+         // add new drawables and update existing ones
+-        auto vertices = RenderStaticData::tileVertices().vector();
+-        auto indexes = RenderStaticData::tileLineStripIndices().vector();
+-        auto segments = RenderStaticData::tileBorderSegments();
+         for (auto& tile : *renderTiles) {
+             const auto tileID = tile.getOverscaledTileID();
+             const auto& debugBucket = tile.debugBucket;
+@@ -439,16 +531,20 @@ void TileSourceRenderItem::updateDebugDrawables(DebugLayerGroupMap& debugLayerGr
+                                        /* .pad3 = */ 0};
+ 
+             if (0 == updateDrawables(tileLayerGroup, tileID, debugUBO) && tile.getNeedsRendering()) {
++                const auto& border = borderFor(tileID);
+                 addDrawable(tileLayerGroup,
+                             tileID,
+                             debugUBO,
+                             gfx::LineStrip(4.0f * parameters.pixelRatio),
+-                            vertices,
+-                            indexes,
+-                            segments);
++                            border.vertices,
++                            border.indexes,
++                            border.segments);
+             }
+ #endif
+         }
++#if !MLN_ENABLE_POLYLINE_DRAWABLES
++        uploadProjections(tileLayerGroup);
++#endif
+     } else {
+         // if tile borders are not required, erase layer group
+         debugLayerGroups.erase(DebugType::Border);
+diff --git a/src/mln/style/layers/custom_layer_render_parameters.cpp b/src/mln/style/layers/custom_layer_render_parameters.cpp
+index cc12e8fffc0c058cfb4e7a53ffadbfb779c9d47f..65697c6a248cc6806df42c34a97831800f70813c 100644
+--- a/src/mln/style/layers/custom_layer_render_parameters.cpp
++++ b/src/mln/style/layers/custom_layer_render_parameters.cpp
+@@ -1,5 +1,7 @@
+ #include <mln/style/layers/custom_layer_render_parameters.hpp>
++#include <mln/map/transform_state.hpp>
+ #include <mln/renderer/paint_parameters.hpp>
++#include <mln/tile/tile_id.hpp>
+ #include <mln/util/mat4.hpp>
+ 
+ namespace mln {
+@@ -19,6 +21,12 @@ CustomLayerRenderParameters::CustomLayerRenderParameters(const mln::PaintParamet
+     state.getProjMatrix(projMatrix);
+     projectionMatrix = projMatrix;
+     nearClippedProjectionMatrix = paintParameters.transformParams.nearClippedProjMatrix;
++
++    globe = state.isGlobeRendering();
++    projectionTransition = state.getProjectionTransition();
++    const ProjectionData projection = state.getProjectionData(UnwrappedTileID(0, 0, 0));
++    globeProjectionMatrix = projection.mainMatrix;
++    globeClippingPlane = projection.clippingPlane;
+ }
+ 
+ } // namespace style
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index edb3f47ecba5f339801ed3eb7cde652d4898e1b7..2a3004f9bb7407ae0a81be6580d7503d39f8ffa9 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -7,6 +7,7 @@ add_library(
+     ${PROJECT_SOURCE_DIR}/test/api/annotations.test.cpp
+     ${PROJECT_SOURCE_DIR}/test/api/api_misuse.test.cpp
+     ${PROJECT_SOURCE_DIR}/test/api/custom_geometry_source.test.cpp
++    ${PROJECT_SOURCE_DIR}/test/api/location_indicator.test.cpp
+     ${PROJECT_SOURCE_DIR}/test/api/query.test.cpp
+     ${PROJECT_SOURCE_DIR}/test/api/recycle_map.cpp
+     ${PROJECT_SOURCE_DIR}/test/geometry/dem_data.test.cpp
+diff --git a/test/api/custom_layer.test.cpp b/test/api/custom_layer.test.cpp
+index c181bae400224e3223ef7098a2c10957bd453bb2..a721c281617fea0d383374bfc055cea66b6b40bf 100644
+--- a/test/api/custom_layer.test.cpp
++++ b/test/api/custom_layer.test.cpp
+@@ -11,8 +11,11 @@
+ #include <mln/storage/resource_options.hpp>
+ #include <mln/style/layers/fill_layer.hpp>
+ #include <mln/style/style.hpp>
++#include <mln/util/constants.hpp>
+ #include <mln/util/io.hpp>
+ #include <mln/util/mat4.hpp>
++
++#include <cmath>
+ #include <mln/util/run_loop.hpp>
+ 
+ #include <memory>
+@@ -62,7 +65,20 @@ public:
+         MBGL_CHECK_ERROR(glBufferData(GL_ARRAY_BUFFER, 6 * sizeof(GLfloat), triangle, GL_STATIC_DRAW));
+     }
+ 
+-    void render(const mln::style::CustomLayerRenderParameters&) override {
++    void render(const mln::style::CustomLayerRenderParameters& parameters) override {
++        // On Mercator the globe fields are inert: no globe, no transition, no clipping plane, and the globe matrix is
++        // the tile matrix of the world.
++        EXPECT_FALSE(parameters.globe);
++        EXPECT_EQ(0.0, parameters.projectionTransition);
++        EXPECT_EQ((std::array<double, 4>{0, 0, 0, 0}), parameters.globeClippingPlane);
++        const double worldSize = mln::util::tileSize_D * std::pow(2.0, parameters.zoom);
++        mln::mat4 world;
++        mln::matrix::identity(world);
++        mln::matrix::scale(world, world, worldSize / mln::util::EXTENT, worldSize / mln::util::EXTENT, 1);
++        mln::mat4 expected;
++        mln::matrix::multiply(expected, parameters.projectionMatrix, world);
++        EXPECT_EQ(expected, parameters.globeProjectionMatrix);
++
+         MBGL_CHECK_ERROR(glUseProgram(program));
+         MBGL_CHECK_ERROR(glBindBuffer(GL_ARRAY_BUFFER, buffer));
+         MBGL_CHECK_ERROR(glEnableVertexAttribArray(a_pos));
+diff --git a/test/api/location_indicator.test.cpp b/test/api/location_indicator.test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdb9be305c5512a375d54a451273428435ea6b70
+--- /dev/null
++++ b/test/api/location_indicator.test.cpp
+@@ -0,0 +1,97 @@
++#include <mln/test/util.hpp>
++
++#include <mln/gfx/headless_frontend.hpp>
++#include <mln/map/map.hpp>
++#include <mln/map/map_options.hpp>
++#include <mln/storage/resource_options.hpp>
++#include <mln/renderer/layers/render_location_indicator_layer.hpp>
++#include <mln/style/layers/location_indicator_layer.hpp>
++#include <mln/style/style.hpp>
++#include <mln/util/geo.hpp>
++#include <mln/util/image.hpp>
++#include <mln/layermanager/layer_manager.hpp>
++#include <mln/style/conversion/json.hpp>
++#include <mln/style/rapidjson_conversion.hpp>
++#include <mln/util/rapidjson.hpp>
++#include <mln/util/run_loop.hpp>
++
++#include <cmath>
++#include <optional>
++#include <string>
++
++using namespace mln;
++using namespace mln::style;
++
++namespace {
++
++// The centre of the accuracy circle in the rendered image: the mean of its red pixels.
++std::optional<ScreenCoordinate> redCentre(const PremultipliedImage& image) {
++    double x = 0;
++    double y = 0;
++    std::size_t count = 0;
++    for (uint32_t row = 0; row < image.size.height; ++row) {
++        for (uint32_t col = 0; col < image.size.width; ++col) {
++            const auto* pixel = image.data.get() + (row * image.size.width + col) * 4;
++            if (pixel[0] > 200 && pixel[1] < 50 && pixel[2] < 50) {
++                x += col;
++                y += row;
++                ++count;
++            }
++        }
++    }
++    if (count == 0) {
++        return std::nullopt;
++    }
++    return ScreenCoordinate{x / static_cast<double>(count), y / static_cast<double>(count)};
++}
++
++void expectPuckAtItsLocation(const std::string& projection) {
++    // The Darwin layer manager does not register the location indicator; the SDKs draw their own puck.
++    const mln::JSValue emptyObject(rapidjson::kObjectType);
++    style::conversion::Error error;
++    if (!LayerManager::get()->createLayer("location-indicator", "probe", &emptyObject, error)) {
++        GTEST_SKIP() << "no location-indicator layer on this platform";
++    }
++
++    util::RunLoop loop;
++
++    HeadlessFrontend frontend{1};
++    Map map(frontend,
++            MapObserver::nullObserver(),
++            MapOptions().withMapMode(MapMode::Static).withSize(frontend.getSize()),
++            ResourceOptions().withCachePath(":memory:"));
++
++    map.getStyle().loadJSON(
++        R"({"version":8,"projection":{"type":")" + projection +
++        R"("},"sources":{},"layers":[{"id":"background","type":"background","paint":{"background-color":"white"}}]})");
++    map.jumpTo(CameraOptions().withCenter(LatLng{0.0, 0.0}).withZoom(1.0));
++
++    const LatLng location{20.0, 20.0};
++    auto puck = std::make_unique<LocationIndicatorLayer>("puck");
++    puck->setLocation(std::array<double, 3>{{location.latitude(), location.longitude(), 0.0}});
++    puck->setAccuracyRadius(1000000.0f);
++    puck->setAccuracyRadiusColor(Color::red());
++    puck->setAccuracyRadiusBorderColor(Color::red());
++    map.getStyle().addLayer(std::move(puck));
++
++    const auto image = frontend.render(map).image;
++    const auto centre = redCentre(image);
++    ASSERT_TRUE(centre.has_value()) << projection << ": no accuracy circle rendered";
++
++    const auto expected = map.pixelForLatLng(location);
++    EXPECT_NEAR(centre->x, expected.x, 3.0) << projection;
++    EXPECT_NEAR(centre->y, expected.y, 3.0) << projection;
++}
++
++} // namespace
++
++TEST(LocationIndicator, MercatorPuckAtItsLocation) {
++    expectPuckAtItsLocation("mercator");
++}
++
++TEST(LocationIndicator, GlobePuckAtItsLocation) {
++#ifndef MLN_DRAWABLE_LOCATION_INDICATOR
++    GTEST_SKIP() << "OpenGL draws the location indicator with its own renderer, which has no globe path yet";
++#endif
++    expectPuckAtItsLocation("globe");
++}

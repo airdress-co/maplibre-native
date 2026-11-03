@@ -1,0 +1,1473 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Carmack <johncarmack@me.com>
+Date: Wed, 26 Aug 2026 18:22:36 +0000
+Subject: [PATCH] Globe 07/13, phase 7: the tiles the camera can see on the
+ globe
+
+Imported from maplibre/maplibre-native#4533 at bec8a12440d0c8a3bd320f151e1b16de39285705,
+first-parent commits 4e83526f8c..4e83526f8c (1).
+---
+ benchmark/util/tilecover.benchmark.cpp        |  18 +-
+ metrics/ignores/platform-android-vulkan.json  |   3 +-
+ metrics/ignores/platform-android.json         |   1 +
+ metrics/ignores/platform-linux-opengl.json    |   3 +-
+ metrics/ignores/platform-linux-vulkan.json    |   1 +
+ metrics/ignores/platform-macos-webgpu.json    |   3 +-
+ metrics/ignores/windows-egl.json              |   1 +
+ metrics/ignores/windows-opengl.json           |   1 +
+ metrics/ignores/windows-vulkan.json           |   1 +
+ .../globe/fill-planet-pole/expected.png       | Bin 0 -> 23551 bytes
+ .../globe/fill-planet-pole/style.json         |  44 ++
+ src/mln/util/bounding_volumes.cpp             |  87 +++-
+ src/mln/util/bounding_volumes.hpp             |   9 +-
+ src/mln/util/mat3.hpp                         |   4 +
+ src/mln/util/tile_cover.cpp                   | 462 +++++++++++++++++-
+ src/mln/util/tile_cover.hpp                   |   3 +-
+ test/util/tile_cover.test.cpp                 | 104 ++++
+ 17 files changed, 723 insertions(+), 22 deletions(-)
+ create mode 100644 metrics/integration/render-tests/projection/globe/fill-planet-pole/expected.png
+ create mode 100644 metrics/integration/render-tests/projection/globe/fill-planet-pole/style.json
+
+diff --git a/benchmark/util/tilecover.benchmark.cpp b/benchmark/util/tilecover.benchmark.cpp
+index 27c8f2bb2aa2472b10defd5731a5b5f40c67ffe8..d631d833883db175c87a9621d111131bad988da9 100644
+--- a/benchmark/util/tilecover.benchmark.cpp
++++ b/benchmark/util/tilecover.benchmark.cpp
+@@ -4,6 +4,7 @@
+ #include <mln/util/tile_coordinate.hpp>
+ #include <mln/util/tile_cover.hpp>
+ #include <mln/map/transform.hpp>
++#include <mln/style/projection_definition.hpp>
+ 
+ using namespace mln;
+ 
+@@ -18,21 +19,31 @@ static void TileCountBounds(benchmark::State& state) {
+     benchmark::DoNotOptimize(length);
+ }
+ 
+-static void TileCoverPitchedViewport(benchmark::State& state) {
++static void tileCoverViewport(benchmark::State& state, const char* projection, double zoom) {
+     Transform transform;
+     transform.resize({512, 512});
++    transform.setProjectionDefinition(ProjectionDefinition(projection));
+     // slightly offset center so that tile order is better defined
+-    transform.jumpTo(CameraOptions().withCenter(LatLng{0.1, -0.1}).withZoom(8.0).withBearing(5.0).withPitch(40.0));
++    transform.jumpTo(CameraOptions().withCenter(LatLng{0.1, -0.1}).withZoom(zoom).withBearing(5.0).withPitch(40.0));
+ 
+     std::size_t length = 0;
+     const Range<uint8_t> zoomRange(0, 14);
++    const auto z = static_cast<uint8_t>(zoom);
+     while (state.KeepRunning()) {
+-        auto tiles = util::tileCover({transform.getState()}, 8, zoomRange);
++        auto tiles = util::tileCover({transform.getState()}, z, zoomRange);
+         length += tiles.size();
+     }
+     benchmark::DoNotOptimize(length);
+ }
+ 
++static void TileCoverPitchedViewport(benchmark::State& state) {
++    tileCoverViewport(state, "mercator", 8.0);
++}
++
++static void TileCoverGlobe(benchmark::State& state) {
++    tileCoverViewport(state, "vertical-perspective", static_cast<double>(state.range(0)));
++}
++
+ static void TileCoverBounds(benchmark::State& state) {
+     std::size_t length = 0;
+     while (state.KeepRunning()) {
+@@ -79,5 +90,6 @@ static void TileCountPolygon(benchmark::State& state) {
+ BENCHMARK(TileCountBounds);
+ BENCHMARK(TileCountPolygon);
+ BENCHMARK(TileCoverPitchedViewport);
++BENCHMARK(TileCoverGlobe)->Arg(3)->Arg(8);
+ BENCHMARK(TileCoverBounds);
+ BENCHMARK(TileCoverPolygon);
+diff --git a/metrics/ignores/platform-android-vulkan.json b/metrics/ignores/platform-android-vulkan.json
+index 833872c8ec954e37085bd34d59cc00cc6defce67..3b89bdbfe218b615636408bd9e2e3bf1667328c8 100644
+--- a/metrics/ignores/platform-android-vulkan.json
++++ b/metrics/ignores/platform-android-vulkan.json
+@@ -6,5 +6,6 @@
+   "render-tests/projection/globe/background": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+   "render-tests/projection/globe/fill-planet-solid": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+   "render-tests/projection/globe/fill-planet-tiles": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/minzoom-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
++  "render-tests/projection/globe/minzoom-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
++  "render-tests/projection/globe/fill-planet-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
+ }
+diff --git a/metrics/ignores/platform-android.json b/metrics/ignores/platform-android.json
+index a23bc14a70ba8b9e1bfa1d06beaf790146f323fc..def86ec83ab0a394c69c5c4a19e47c9a36dfe13f 100644
+--- a/metrics/ignores/platform-android.json
++++ b/metrics/ignores/platform-android.json
+@@ -21,5 +21,6 @@
+     "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/platform-linux-opengl.json b/metrics/ignores/platform-linux-opengl.json
+index 4cd3ed06780cba59aa5daedeea2403a2fec5faf3..c9291371868e23d2caa1d2662cf3adadd6864c0b 100644
+--- a/metrics/ignores/platform-linux-opengl.json
++++ b/metrics/ignores/platform-linux-opengl.json
+@@ -4,5 +4,6 @@
+   "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+   "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+   "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-  "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++  "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++  "render-tests/projection/globe/fill-planet-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/platform-linux-vulkan.json b/metrics/ignores/platform-linux-vulkan.json
+index ead8ed15563d3867b7bb14305e421547c88659aa..9998993cd88ba94a974d005c81171f9cfe5537f6 100644
+--- a/metrics/ignores/platform-linux-vulkan.json
++++ b/metrics/ignores/platform-linux-vulkan.json
+@@ -2,6 +2,7 @@
+   "render-tests/fill-extrusion-color/function": "Layer Z Fighting: https://github.com/maplibre/maplibre-native/issues/1847",
+   "render-tests/tilejson-bounds/default": "flaky on CI",
+   "render-tests/icon-text-fit/textFit-grid-long": "Needs to be investigated",
++  "render-tests/projection/globe/fill-planet-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+   "render-tests/projection/globe/fill-planet-tiles": "fill outline anti-aliasing differs from the Metal expectation",
+   "render-tests/projection/globe/fill-grid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+   "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+diff --git a/metrics/ignores/platform-macos-webgpu.json b/metrics/ignores/platform-macos-webgpu.json
+index bec5d214f02993f15e0e384b3e64d186b3e292c3..3b2e77601acac97d55fb022370ae440f3b87fefb 100644
+--- a/metrics/ignores/platform-macos-webgpu.json
++++ b/metrics/ignores/platform-macos-webgpu.json
+@@ -17,5 +17,6 @@
+     "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+     "render-tests/projection/globe/background": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+     "render-tests/projection/globe/fill-planet-solid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+-    "render-tests/projection/globe/fill-planet-tiles": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
++    "render-tests/projection/globe/fill-planet-tiles": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
++    "render-tests/projection/globe/fill-planet-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525"
+ }
+diff --git a/metrics/ignores/windows-egl.json b/metrics/ignores/windows-egl.json
+index d290501bd2de6b639c1f0efd9d9672dfd2bda545..a9c2a217ec1e34965daa905a9ba0954812fc21e7 100644
+--- a/metrics/ignores/windows-egl.json
++++ b/metrics/ignores/windows-egl.json
+@@ -11,5 +11,6 @@
+     "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/windows-opengl.json b/metrics/ignores/windows-opengl.json
+index d95d5335282f8982cb6d54c21439367d58c2ffa8..813bc2e8dff404fa464519c18d79445a24449288 100644
+--- a/metrics/ignores/windows-opengl.json
++++ b/metrics/ignores/windows-opengl.json
+@@ -11,5 +11,6 @@
+     "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/fill-planet-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/windows-vulkan.json b/metrics/ignores/windows-vulkan.json
+index a331e0d6e8f39a8676820d29687d0512ef15896c..5c8af6bb58a6ada9fc5d9df7893122d7507632db 100644
+--- a/metrics/ignores/windows-vulkan.json
++++ b/metrics/ignores/windows-vulkan.json
+@@ -4,6 +4,7 @@
+     "render-tests/icon-text-fit/textFit-grid-long": "Needs investigation (Diff: 0.00507716049382716)",
+     "render-tests/regressions/mapbox-gl-js#5642": "Needs investigation (Diff: 0.01416015625)",
+     "render-tests/regressions/mapbox-gl-js#7066": "Needs investigation (Diff: 0.0002777777777777778)",
++    "render-tests/projection/globe/fill-planet-pole": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+     "render-tests/projection/globe/fill-planet-tiles": "fill outline anti-aliasing differs from the Metal expectation",
+     "render-tests/projection/globe/fill-grid": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+     "render-tests/projection/globe/fill-grid-pitched": "globe rendering lands per backend after Metal; https://github.com/maplibre/maplibre-native/pull/4525",
+diff --git a/metrics/integration/render-tests/projection/globe/fill-planet-pole/expected.png b/metrics/integration/render-tests/projection/globe/fill-planet-pole/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..d93cc64fa1f787f08b92679a7355fa6ed084a49e
+GIT binary patch
+literal 23551
+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
+DTkEtT
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/integration/render-tests/projection/globe/fill-planet-pole/style.json b/metrics/integration/render-tests/projection/globe/fill-planet-pole/style.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..e3d4aafe317e27f8f4dd14dd6e47c8097645b475
+--- /dev/null
++++ b/metrics/integration/render-tests/projection/globe/fill-planet-pole/style.json
+@@ -0,0 +1,44 @@
++{
++  "version": 8,
++  "metadata": {
++    "test": {
++      "width": 512,
++      "height": 512
++    }
++  },
++  "center": [
++    0.0,
++    80.0
++  ],
++  "zoom": -0.5,
++  "projection": {
++    "type": "globe"
++  },
++  "sources": {
++    "vector_tiles": {
++      "type": "vector",
++      "maxzoom": 0,
++      "tiles": [
++        "local://tiles/{z}-{x}-{y}.mvt"
++      ]
++    }
++  },
++  "layers": [
++    {
++      "id": "background",
++      "type": "background",
++      "paint": {
++        "background-color": "white"
++      }
++    },
++    {
++      "id": "land",
++      "type": "fill",
++      "source": "vector_tiles",
++      "source-layer": "water",
++      "paint": {
++        "fill-color": "blue"
++      }
++    }
++  ]
++}
+diff --git a/src/mln/util/bounding_volumes.cpp b/src/mln/util/bounding_volumes.cpp
+index 40034a774a1df7a49ca040ff460d299b4aa6c0b8..bc5c5dba3755b4ef8a1194e0d29b126cb280cac5 100644
+--- a/src/mln/util/bounding_volumes.cpp
++++ b/src/mln/util/bounding_volumes.cpp
+@@ -15,6 +15,73 @@ double vec4Dot(const vec4& a, const vec4& b) noexcept {
+     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+ }
+ 
++std::optional<double> rayPlaneIntersection(const vec3& origin, const vec3& direction, const vec4& plane) noexcept {
++    const vec3 normal = {{plane[0], plane[1], plane[2]}};
++    const double along = vec3Dot(direction, normal);
++    if (along == 0) {
++        return std::nullopt;
++    }
++    return (-vec3Dot(origin, normal) - plane[3]) / along;
++}
++
++vec4 planeThrough(const vec3& p0, const vec3& p1, const vec3& p2) noexcept {
++    const vec3 n = vec3Normalize(vec3Cross(vec3Sub(p0, p1), vec3Sub(p2, p1)));
++    return {{n[0], n[1], n[2], -vec3Dot(n, p1)}};
++}
++
++// The distance from the near plane to the point of the horizon circle farthest along the view direction, if the
++// camera is not looking straight down.
++std::optional<double> idealNearFarPlaneDistance(const vec4& horizonPlane, const vec4& nearPlane) noexcept {
++    const vec3 view = {{nearPlane[0], nearPlane[1], nearPlane[2]}};
++    const double horizonLength = vec3Length({{horizonPlane[0], horizonPlane[1], horizonPlane[2]}});
++    const vec3 horizonNormal = vec3Scale({{horizonPlane[0], horizonPlane[1], horizonPlane[2]}}, 1.0 / horizonLength);
++    const double horizonDistance = horizonPlane[3] / horizonLength;
++    const vec3 projectedView = vec3Sub(view, vec3Scale(horizonNormal, vec3Dot(view, horizonNormal)));
++    const double projectedLength = vec3Length(projectedView);
++    if (projectedLength <= 0) {
++        return std::nullopt;
++    }
++    const double circleRadius = std::sqrt(1.0 - horizonDistance * horizonDistance);
++    const vec3 circleCenter = vec3Scale(horizonNormal, -horizonDistance);
++    const vec3 farthest = vec3Add(circleCenter, vec3Scale(projectedView, circleRadius / projectedLength));
++    return vec3Dot(view, farthest) + nearPlane[3];
++}
++
++// Moves the far corners in along the frustum's edges until the far plane reaches no further than the horizon;
++// port of GL JS `adjustFarPlaneByHorizonPlane`. The near corners are the first four.
++void adjustFarPlaneByHorizonPlane(std::array<vec4, 8>& corners,
++                                  const std::array<int, 3>& nearPlaneIndices,
++                                  const vec4& horizonPlane) noexcept {
++    constexpr std::size_t nearOffset = 0;
++    constexpr std::size_t farOffset = 4;
++    std::array<double, 4> rayLengths{};
++    std::array<vec3, 4> rayDirections{};
++    double maxDistance = 0;
++    for (std::size_t i = 0; i < 4; i++) {
++        const vec3 ray = vec3Sub(toVec3(corners[i + farOffset]), toVec3(corners[i + nearOffset]));
++        rayLengths[i] = vec3Length(ray);
++        rayDirections[i] = vec3Scale(ray, 1.0 / rayLengths[i]);
++    }
++    for (std::size_t i = 0; i < 4; i++) {
++        const auto distance = rayPlaneIntersection(toVec3(corners[i + nearOffset]), rayDirections[i], horizonPlane);
++        // Rays parallel to the horizon or pointing away from it keep their length.
++        maxDistance = std::max(maxDistance, distance && *distance >= 0 ? *distance : rayLengths[i]);
++    }
++    const vec4 nearPlane = planeThrough(toVec3(corners[nearPlaneIndices[0]]),
++                                        toVec3(corners[nearPlaneIndices[1]]),
++                                        toVec3(corners[nearPlaneIndices[2]]));
++    if (const auto ideal = idealNearFarPlaneDistance(horizonPlane, nearPlane)) {
++        // The rays make the same angle with the near plane at all four corners.
++        maxDistance = std::min(maxDistance,
++                               *ideal / vec3Dot(rayDirections[0], {{nearPlane[0], nearPlane[1], nearPlane[2]}}));
++    }
++    for (std::size_t i = 0; i < 4; i++) {
++        const vec3 far = vec3Add(toVec3(corners[i + nearOffset]),
++                                 vec3Scale(rayDirections[i], std::min(maxDistance, rayLengths[i])));
++        corners[i + farOffset] = {{far[0], far[1], far[2], 1.0}};
++    }
++}
++
+ template <size_t N>
+ Point<double> ProjectPointsToAxis(const std::array<vec3, N>& points, const vec3& origin, const vec3& axis) noexcept {
+     double min = std::numeric_limits<double>::max();
+@@ -136,7 +203,8 @@ Frustum::Frustum(const std::array<vec3, 8>& points_, const std::array<vec4, 6>&
+     }
+ }
+ 
+-Frustum Frustum::fromInvProjMatrix(const mat4& invProj, double worldSize, double zoom, bool flippedY) {
++Frustum Frustum::fromInvProjMatrix(
++    const mat4& invProj, double worldSize, double zoom, bool flippedY, const std::optional<vec4>& horizonPlane) {
+     // Define frustum corner points in normalized clip space
+     std::array<vec4, 8> cornerCoords = {{vec4{{-1.0, 1.0, -1.0, 1.0}},
+                                          vec4{{1.0, 1.0, -1.0, 1.0}},
+@@ -168,21 +236,16 @@ Frustum Frustum::fromInvProjMatrix(const mat4& invProj, double worldSize, double
+         std::ranges::for_each(frustumPlanePointIndices, [](vec3i& tri) { std::swap(tri[1], tri[2]); });
+     }
+ 
++    if (horizonPlane) {
++        adjustFarPlaneByHorizonPlane(cornerCoords, frustumPlanePointIndices[4], *horizonPlane);
++    }
++
+     std::array<vec4, 6> frustumPlanes;
+ 
+     for (std::size_t i = 0; i < frustumPlanePointIndices.size(); i++) {
+         const vec3i indices = frustumPlanePointIndices[i];
+-
+-        // Compute plane equation using 3 points on the plane
+-        const vec3 p0 = toVec3(cornerCoords[indices[0]]);
+-        const vec3 p1 = toVec3(cornerCoords[indices[1]]);
+-        const vec3 p2 = toVec3(cornerCoords[indices[2]]);
+-
+-        const vec3 a = vec3Sub(p0, p1);
+-        const vec3 b = vec3Sub(p2, p1);
+-        const vec3 n = vec3Normalize(vec3Cross(a, b));
+-
+-        frustumPlanes[i] = {{n[0], n[1], n[2], -vec3Dot(n, p1)}};
++        frustumPlanes[i] = planeThrough(
++            toVec3(cornerCoords[indices[0]]), toVec3(cornerCoords[indices[1]]), toVec3(cornerCoords[indices[2]]));
+     }
+ 
+     std::array<vec3, 8> frustumPoints;
+diff --git a/src/mln/util/bounding_volumes.hpp b/src/mln/util/bounding_volumes.hpp
+index 2c2081c2d0755e9c0a5f5f76e085b5c416af33e7..19b69128015d2d6079f1007ae2f34e6509569196 100644
+--- a/src/mln/util/bounding_volumes.hpp
++++ b/src/mln/util/bounding_volumes.hpp
+@@ -4,6 +4,8 @@
+ #include <mln/util/mat3.hpp>
+ #include <mln/util/mat4.hpp>
+ 
++#include <optional>
++
+ namespace mln {
+ namespace util {
+ 
+@@ -39,7 +41,12 @@ class Frustum {
+ public:
+     Frustum(const std::array<vec3, 8>& points_, const std::array<vec4, 6>& planes_);
+ 
+-    static Frustum fromInvProjMatrix(const mat4& invProj, double worldSize, double zoom, bool flippedY = false);
++    /// With `horizonPlane`, the far plane is pulled in to the horizon so nothing behind it counts as visible.
++    static Frustum fromInvProjMatrix(const mat4& invProj,
++                                     double worldSize,
++                                     double zoom,
++                                     bool flippedY = false,
++                                     const std::optional<vec4>& horizonPlane = std::nullopt);
+ 
+     // Performs conservative intersection test using separating axis theorem.
+     // Some accuracy is traded for better performance. False positive rate is < 1%
+diff --git a/src/mln/util/mat3.hpp b/src/mln/util/mat3.hpp
+index 4de580764b2d8fc099cdc1038f725f843cce7813..b162faea4abb51abcf623014db6750b2b7447163 100644
+--- a/src/mln/util/mat3.hpp
++++ b/src/mln/util/mat3.hpp
+@@ -62,6 +62,10 @@ constexpr vec3 vec3Sub(const vec3& a, const vec3& b) noexcept {
+     return vec3{{a[0] - b[0], a[1] - b[1], a[2] - b[2]}};
+ }
+ 
++constexpr vec3 vec3Add(const vec3& a, const vec3& b) noexcept {
++    return vec3{{a[0] + b[0], a[1] + b[1], a[2] + b[2]}};
++}
++
+ namespace matrix {
+ 
+ void identity(mat3& out) noexcept;
+diff --git a/src/mln/util/tile_cover.cpp b/src/mln/util/tile_cover.cpp
+index 7a4a215339ea8fa34cd0cc896a50a1f28eff9194..d1ee61e49e1e8c873f9397fdb6b90788789d53df 100644
+--- a/src/mln/util/tile_cover.cpp
++++ b/src/mln/util/tile_cover.cpp
+@@ -1,12 +1,19 @@
++#include <array>
++#include <span>
++#include <mln/math/angles.hpp>
+ #include <mln/math/log2.hpp>
++#include <mln/map/vertical_perspective_projection.hpp>
+ #include <mln/util/bounding_volumes.hpp>
++#include <mln/util/mat3.hpp>
+ #include <mln/util/constants.hpp>
+ #include <mln/util/interpolate.hpp>
+ #include <mln/util/tile_coordinate.hpp>
+ #include <mln/util/tile_cover.hpp>
+ #include <mln/util/tile_cover_impl.hpp>
+ 
++#include <cassert>
+ #include <functional>
++#include <limits>
+ #include <list>
+ 
+ using namespace std::numbers;
+@@ -155,10 +162,457 @@ int32_t coveringZoomLevel(double zoom, style::SourceType type, uint16_t size) no
+     }
+ }
+ 
++// The globe tile cover: a port of GL JS `coveringTiles` with `GlobeCoveringTilesDetailsProvider`. Tiles are
++// tested against the camera frustum in unit-sphere space with a convex bounding volume each, and against
++// the horizon plane, so the far side of the planet loads nothing.
++namespace {
++namespace globe {
++
++// A tile's bounding volume in unit-sphere space: a box at zoom 0 and 1, a wedge with up to eight corners after.
++struct ConvexVolume {
++    std::array<vec3, 8> points{};
++    std::size_t pointCount = 0;
++    std::array<vec4, 6> planes{};
++
++    void addPoint(const vec3& point) {
++        assert(pointCount < points.size());
++        points[pointCount++] = point;
++    }
++};
++
++IntersectionResult intersectsFrustum(const ConvexVolume& volume, const Frustum& frustum) {
++    bool fullyInside = true;
++    for (const vec4& plane : frustum.getPlanes()) {
++        std::size_t passed = 0;
++        for (std::size_t i = 0; i < volume.pointCount; ++i) {
++            const vec3& point = volume.points[i];
++            if (plane[0] * point[0] + plane[1] * point[1] + plane[2] * point[2] + plane[3] >= 0) {
++                passed++;
++            }
++        }
++        if (passed == 0) {
++            return IntersectionResult::Separate;
++        }
++        if (passed < volume.pointCount) {
++            fullyInside = false;
++        }
++    }
++    if (fullyInside) {
++        return IntersectionResult::Contains;
++    }
++    for (const vec4& plane : volume.planes) {
++        std::size_t passed = 0;
++        for (const vec3& point : frustum.getPoints()) {
++            if (plane[0] * point[0] + plane[1] * point[1] + plane[2] * point[2] + plane[3] >= 0) {
++                passed++;
++            }
++        }
++        if (passed == 0) {
++            return IntersectionResult::Separate;
++        }
++    }
++    return IntersectionResult::Intersects;
++}
++
++IntersectionResult intersectsPlane(const ConvexVolume& volume, const vec4& plane) {
++    std::size_t positive = 0;
++    for (std::size_t i = 0; i < volume.pointCount; ++i) {
++        const vec3& point = volume.points[i];
++        if (plane[0] * point[0] + plane[1] * point[1] + plane[2] * point[2] + plane[3] >= 0) {
++            positive++;
++        }
++    }
++    if (positive == volume.pointCount) {
++        return IntersectionResult::Contains;
++    }
++    if (positive == 0) {
++        return IntersectionResult::Separate;
++    }
++    return IntersectionResult::Intersects;
++}
++
++IntersectionResult isTileVisible(const Frustum& frustum, const ConvexVolume& volume, const vec4& plane) {
++    const auto frustumTest = intersectsFrustum(volume, frustum);
++    if (frustumTest == IntersectionResult::Separate) {
++        return frustumTest;
++    }
++    const auto planeTest = intersectsPlane(volume, plane);
++    if (planeTest == IntersectionResult::Separate) {
++        return IntersectionResult::Separate;
++    }
++    if (frustumTest == IntersectionResult::Contains && planeTest == IntersectionResult::Contains) {
++        return IntersectionResult::Contains;
++    }
++    return IntersectionResult::Intersects;
++}
++
++vec3 threePlaneIntersection(const vec4& p0, const vec4& p1, const vec4& p2) {
++    const vec3 n0 = {{p0[0], p0[1], p0[2]}};
++    const vec3 n1 = {{p1[0], p1[1], p1[2]}};
++    const vec3 n2 = {{p2[0], p2[1], p2[2]}};
++    const double det = vec3Dot(n0, vec3Cross(n1, n2));
++    if (det == 0) {
++        return {{0, 0, 0}};
++    }
++    vec3 sum = vec3Scale(vec3Cross(n1, n2), -p0[3]);
++    sum = vec3Sub(sum, vec3Scale(vec3Cross(n2, n0), p1[3]));
++    sum = vec3Sub(sum, vec3Scale(vec3Cross(n0, n1), p2[3]));
++    return vec3Scale(sum, 1.0 / det);
++}
++
++ConvexVolume aabbVolume(const vec3& min, const vec3& max) {
++    ConvexVolume volume;
++    for (int i = 0; i < 8; i++) {
++        volume.addPoint({{(i & 1) ? max[0] : min[0], (i & 2) ? max[1] : min[1], (i & 4) ? max[2] : min[2]}});
++    }
++    volume.planes = {{{{-1, 0, 0, max[0]}},
++                      {{1, 0, 0, -min[0]}},
++                      {{0, -1, 0, max[1]}},
++                      {{0, 1, 0, -min[1]}},
++                      {{0, 0, -1, max[2]}},
++                      {{0, 0, 1, -min[2]}}}};
++    return volume;
++}
++
++std::pair<double, double> axisMinMax(const vec3& axis, std::span<const vec3> points) {
++    double min = std::numeric_limits<double>::infinity();
++    double max = -std::numeric_limits<double>::infinity();
++    for (const vec3& point : points) {
++        const double dot = vec3Dot(axis, point);
++        min = std::min(min, dot);
++        max = std::max(max, dot);
++    }
++    return {min, max};
++}
++
++vec3 toSphere(double x, double y, const CanonicalTileID& tile) {
++    return VerticalPerspectiveProjection::tileCoordinatesToSphere({x, y}, UnwrappedTileID(0, tile));
++}
++
++constexpr double maxMercatorHorizonAngle = 89.25;
++constexpr double assumedMaxFeatureHeightMeters = 500;
++constexpr double tileCullingHorizonOnsetDegrees = 15;
++
++// Near the bottom of a steeply pitched view, tiles are culled with room for the tallest feature they might hold,
++// so buildings do not vanish before their tile leaves the screen (GL JS `getElevationForTileCulling`).
++double elevationForTileCulling(double pitchDegrees, double fovDegrees) {
++    const double bottomEdgeDegreesAboveHorizontal = maxMercatorHorizonAngle - pitchDegrees - fovDegrees / 2;
++    const double proximityToHorizon = std::clamp(
++        (tileCullingHorizonOnsetDegrees - bottomEdgeDegreesAboveHorizontal) / tileCullingHorizonOnsetDegrees, 0.0, 1.0);
++    return proximityToHorizon * assumedMaxFeatureHeightMeters;
++}
++
++// `elevation` in meters grows the volume above the sphere's surface.
++ConvexVolume tileBoundingVolume(const CanonicalTileID& tile, double elevation) {
++    // Distances from the planet's center in a world where the surface is at 1.
++    const double minRadius = std::min(0.0, elevation) / util::EARTH_RADIUS_M + 1.0;
++    const double maxRadius = std::max(0.0, elevation) / util::EARTH_RADIUS_M + 1.0;
++    if (tile.z == 0) {
++        return aabbVolume({{-maxRadius, -maxRadius, -maxRadius}}, {{maxRadius, maxRadius, maxRadius}});
++    }
++    if (tile.z == 1) {
++        // X is 1 at lng 90E, Y is 1 at the north pole, Z is 1 at null island.
++        return aabbVolume({{tile.x == 0 ? -maxRadius : 0.0, tile.y == 0 ? 0.0 : -maxRadius, -maxRadius}},
++                          {{tile.x == 0 ? 0.0 : maxRadius, tile.y == 0 ? maxRadius : 0.0, maxRadius}});
++    }
++    const std::array<vec3, 4> corners = {{toSphere(0, 0, tile),
++                                          toSphere(util::EXTENT, 0, tile),
++                                          toSphere(util::EXTENT, util::EXTENT, tile),
++                                          toSphere(0, util::EXTENT, tile)}};
++    // Corners at both radii, a pole if the tile touches one, the center, and the bulging edge midpoint.
++    std::array<vec3, 11> extremes{};
++    std::size_t extremeCount = 0;
++    for (const vec3& corner : corners) {
++        extremes[extremeCount++] = vec3Scale(corner, maxRadius);
++    }
++    if (maxRadius != minRadius) {
++        for (const vec3& corner : corners) {
++            extremes[extremeCount++] = vec3Scale(corner, minRadius);
++        }
++    }
++    const uint32_t lastRow = (1u << tile.z) - 1;
++    if (tile.y == 0) {
++        extremes[extremeCount++] = {{0, 1, 0}};
++    }
++    if (tile.y == lastRow) {
++        extremes[extremeCount++] = {{0, -1, 0}};
++    }
++
++    // The up/down axis is the tile center; north/south is orthogonal to it; the east and west planes follow
++    // the tile's meridian edges and are not parallel, so the volume is a wedge rather than a box.
++    const vec3 center = toSphere(util::EXTENT / 2.0, util::EXTENT / 2.0, tile);
++    const vec3 centerEast = vec3Normalize(vec3Cross({{0, 1, 0}}, center));
++    const vec3 north = vec3Normalize(vec3Cross(center, centerEast));
++    const vec3 axisEast = vec3Normalize(vec3Cross(corners[2], corners[1]));
++    const vec3 axisWest = vec3Normalize(vec3Cross(corners[0], corners[3]));
++
++    extremes[extremeCount++] = vec3Scale(center, maxRadius);
++    // The edge midpoint that bulges away from the center: the north edge in the south hemisphere, the south edge in the
++    // north.
++    if (tile.y >= (1u << tile.z) / 2) {
++        extremes[extremeCount++] = vec3Scale(toSphere(util::EXTENT / 2.0, 0, tile), maxRadius);
++    } else {
++        extremes[extremeCount++] = vec3Scale(toSphere(util::EXTENT / 2.0, util::EXTENT, tile), maxRadius);
++    }
++    const std::span<const vec3> extremeSpan(extremes.data(), extremeCount);
++
++    const auto [upMin, upMax] = axisMinMax(center, extremeSpan);
++    const auto [northMin, northMax] = axisMinMax(north, extremeSpan);
++    const vec4 planeUp = {{-center[0], -center[1], -center[2], upMax}};
++    const vec4 planeDown = {{center[0], center[1], center[2], -upMin}};
++    const vec4 planeNorth = {{-north[0], -north[1], -north[2], northMax}};
++    const vec4 planeSouth = {{north[0], north[1], north[2], -northMin}};
++    const vec4 planeEast = {{axisEast[0], axisEast[1], axisEast[2], 0}};
++    const vec4 planeWest = {{axisWest[0], axisWest[1], axisWest[2], 0}};
++
++    ConvexVolume volume;
++    if (tile.y == 0) {
++        volume.addPoint(threePlaneIntersection(planeWest, planeEast, planeUp));
++        volume.addPoint(threePlaneIntersection(planeWest, planeEast, planeDown));
++    } else {
++        volume.addPoint(threePlaneIntersection(planeNorth, planeEast, planeUp));
++        volume.addPoint(threePlaneIntersection(planeNorth, planeEast, planeDown));
++        volume.addPoint(threePlaneIntersection(planeNorth, planeWest, planeUp));
++        volume.addPoint(threePlaneIntersection(planeNorth, planeWest, planeDown));
++    }
++    if (tile.y == lastRow) {
++        volume.addPoint(threePlaneIntersection(planeWest, planeEast, planeUp));
++        volume.addPoint(threePlaneIntersection(planeWest, planeEast, planeDown));
++    } else {
++        volume.addPoint(threePlaneIntersection(planeSouth, planeEast, planeUp));
++        volume.addPoint(threePlaneIntersection(planeSouth, planeEast, planeDown));
++        volume.addPoint(threePlaneIntersection(planeSouth, planeWest, planeUp));
++        volume.addPoint(threePlaneIntersection(planeSouth, planeWest, planeDown));
++    }
++    volume.planes = {planeUp, planeDown, planeNorth, planeSouth, planeEast, planeWest};
++    return volume;
++}
++
++// Distances below are in a world of size 1, to the nearer tile edge.
++double distanceToTileSimple(double point, double tile, double tileSize) {
++    const double delta = point - tile;
++    return delta < 0 ? -delta : std::max(0.0, delta - tileSize);
++}
++
++double distanceToTileWrapX(double pointX, double pointY, double cornerX, double cornerY, double tileSize) {
++    const double toPointX = pointX - cornerX;
++    double distanceX;
++    if (toPointX < 0) {
++        distanceX = std::min(-toPointX, 1.0 + toPointX - tileSize);
++    } else if (toPointX > tileSize) {
++        distanceX = std::min(std::max(toPointX - tileSize, 0.0), 1.0 - toPointX);
++    } else {
++        distanceX = 0;
++    }
++    return std::max(distanceX, distanceToTileSimple(pointY, cornerY, tileSize));
++}
++
++// X wraps at the antimeridian; across a pole Y mirrors and X shifts by half the world.
++double distanceToTile2d(double pointX, double pointY, const CanonicalTileID& tile) {
++    const double scale = static_cast<double>(1u << tile.z);
++    const double tileSize = 1.0 / scale;
++    const double cornerX = tile.x / scale;
++    const double cornerY = tile.y / scale;
++    double smallest = 2.0;
++    smallest = std::min(smallest, distanceToTileWrapX(pointX, pointY, cornerX, cornerY, tileSize));
++    smallest = std::min(smallest, distanceToTileWrapX(pointX, pointY, cornerX + 0.5, -cornerY - tileSize, tileSize));
++    smallest = std::min(smallest,
++                        distanceToTileWrapX(pointX, pointY, cornerX + 0.5, 2.0 - cornerY - tileSize, tileSize));
++    return smallest;
++}
++
++// The wrap that keeps a tile loaded while the view crosses the antimeridian.
++int16_t wrapFor(double centerX, const CanonicalTileID& tile) {
++    const double scale = static_cast<double>(1u << tile.z);
++    const double tileSize = 1.0 / scale;
++    const double tileX = tile.x / scale;
++    const double current = distanceToTileSimple(centerX, tileX, tileSize);
++    const double left = distanceToTileSimple(centerX, tileX - 1.0, tileSize);
++    const double right = distanceToTileSimple(centerX, tileX + 1.0, tileSize);
++    const double smallest = std::min({current, left, right});
++    if (smallest == right) {
++        return 1;
++    }
++    if (smallest == left) {
++        return -1;
++    }
++    return 0;
++}
++
++double integralOfCosXByP(double p, double x1, double x2) {
++    constexpr int numPoints = 10;
++    double sum = 0;
++    const double dx = (x2 - x1) / numPoints;
++    for (int i = 0; i < numPoints; i++) {
++        const double x = x1 + (i + 0.5) / numPoints * (x2 - x1);
++        sum += dx * std::pow(std::cos(x), p);
++    }
++    return sum;
++}
++
++// The parts of GL JS `createCalculateTileZoomFunction(9.314, 3.0)` that depend on the camera alone.
++struct TileZoomConstants {
++    double pitchTileLoadingBehavior;
++    double tileCountPitch0;
++
++    explicit TileZoomConstants(double cameraVerticalFOV)
++        : pitchTileLoadingBehavior(2 *
++                                   ((maxZoomLevelsOnScreen - 1) /
++                                        std::log2(std::cos(util::deg2rad(maxMercatorHorizonAngle - cameraVerticalFOV)) /
++                                                  std::cos(util::deg2rad(maxMercatorHorizonAngle))) -
++                                    1)),
++          tileCountPitch0(2 *
++                          integralOfCosXByP(pitchTileLoadingBehavior - 1, 0, util::deg2rad(cameraVerticalFOV / 2))) {}
++
++    static constexpr double maxZoomLevelsOnScreen = 9.314;
++    static constexpr double tileCountMaxMinRatio = 3.0;
++};
++
++// The zoom a tile is loaded at when the view is pitched.
++double calculateTileZoom(const TileZoomConstants& constants,
++                         double requestedCenterZoom,
++                         double distanceToTile2D,
++                         double distanceToTileZ,
++                         double distanceToCenter3D,
++                         double cameraVerticalFOV) {
++    const double pitchTileLoadingBehavior = constants.pitchTileLoadingBehavior;
++    const double centerPitch = std::acos(std::min(1.0, distanceToTileZ / distanceToCenter3D));
++    const double highestPitch = std::min(util::deg2rad(maxMercatorHorizonAngle),
++                                         centerPitch + util::deg2rad(cameraVerticalFOV / 2));
++    const double lowestPitch = std::min(highestPitch, centerPitch - util::deg2rad(cameraVerticalFOV / 2));
++    const double tileCount = integralOfCosXByP(pitchTileLoadingBehavior - 1, lowestPitch, highestPitch);
++    const double thisTilePitch = std::atan(distanceToTile2D / distanceToTileZ);
++    const double distanceToTile3D = std::hypot(distanceToTile2D, distanceToTileZ);
++    double desired = requestedCenterZoom;
++    desired += std::log2(distanceToCenter3D / distanceToTile3D /
++                         std::max(0.5, std::cos(util::deg2rad(cameraVerticalFOV / 2))));
++    desired += pitchTileLoadingBehavior * std::log2(std::cos(thisTilePitch)) / 2;
++    desired -=
++        std::log2(std::max(1.0, tileCount / constants.tileCountPitch0 / TileZoomConstants::tileCountMaxMinRatio)) / 2;
++    return desired;
++}
++
+ std::vector<OverscaledTileID> tileCover(const TileCoverParameters& state,
+                                         uint8_t z,
+                                         const Range<uint8_t> zoomRange,
+                                         const std::optional<uint8_t>& overscaledZ) {
++    struct Node {
++        uint8_t zoom;
++        uint32_t x, y;
++        int16_t wrap;
++        bool fullyVisible;
++    };
++    struct ResultTile {
++        OverscaledTileID id;
++        double sqrDist;
++    };
++
++    const auto& transform = state.transformState;
++    const ProjectionData projection = transform.getProjectionData(UnwrappedTileID(0, 0, 0));
++    mat4 inverse;
++    // `invert` reports a singular matrix with `true`.
++    if (matrix::invert(inverse, projection.mainMatrix)) {
++        return {};
++    }
++    // The globe matrix has no Mercator y flip, which reverses the winding the plane normals come from. The far plane
++    // stops at the horizon, so the frustum's corners bound the visible cap and not the space behind the planet.
++    const vec4& horizon = projection.clippingPlane;
++    const Frustum frustum = Frustum::fromInvProjMatrix(inverse, 1.0, 0.0, /*flippedY=*/true, horizon);
++
++    // Tiles nearer the camera than the center may load finer than the nominal zoom, up to the source's maximum.
++    const uint8_t maxZoom = zoomRange.max;
++    const uint8_t minZoom = zoomRange.min;
++    const uint8_t overscaledZoom = std::max(overscaledZ.value_or(z), maxZoom);
++    const double numTiles = std::pow(2.0, z);
++    const bool allowVariableZoom = z > 4;
++
++    const Point<double> center = Projection::project(transform.getLatLng(), 1.0 / util::tileSize_D);
++    const vec3 centerCoord = {{center.x, center.y, 0.0}};
++    const std::optional<vec3> cameraPosition = transform.getFreeCameraOptions().position;
++    assert(cameraPosition);
++    if (!cameraPosition) {
++        return {};
++    }
++    const vec3& cameraCoord = *cameraPosition;
++    const double distanceToCenter2d = std::hypot(centerCoord[0] - cameraCoord[0], centerCoord[1] - cameraCoord[1]);
++    const double distanceZ = std::abs(centerCoord[2] - cameraCoord[2]);
++    const double distanceToCenter3d = std::hypot(distanceToCenter2d, distanceZ);
++    const double requestedCenterZoom = transform.getZoom() + (z - std::floor(transform.getZoom()));
++    const double fovDegrees = transform.getFieldOfView() * 180.0 / std::numbers::pi;
++    const TileZoomConstants zoomConstants(fovDegrees);
++    const double cullingElevation = elevationForTileCulling(transform.getPitch() * 180.0 / std::numbers::pi,
++                                                            fovDegrees);
++
++    std::vector<Node> stack;
++    std::vector<ResultTile> result;
++    stack.reserve(64);
++    result.reserve(64);
++    stack.push_back({.zoom = 0, .x = 0, .y = 0, .wrap = 0, .fullyVisible = false});
++
++    while (!stack.empty()) {
++        Node node = stack.back();
++        stack.pop_back();
++        const CanonicalTileID tile(node.zoom, node.x, node.y);
++        const ConvexVolume volume = tileBoundingVolume(tile, cullingElevation);
++
++        if (!node.fullyVisible) {
++            const IntersectionResult intersection = isTileVisible(frustum, volume, horizon);
++            if (intersection == IntersectionResult::Separate) continue;
++            node.fullyVisible = intersection == IntersectionResult::Contains;
++        }
++
++        double desiredZ = z;
++        if (allowVariableZoom) {
++            const double distToTile2d = distanceToTile2d(cameraCoord[0], cameraCoord[1], tile);
++            desiredZ = std::floor(calculateTileZoom(
++                zoomConstants, requestedCenterZoom, distToTile2d, distanceZ, distanceToCenter3d, fovDegrees));
++        }
++        const auto targetZoom = static_cast<uint8_t>(std::clamp(desiredZ, 0.0, static_cast<double>(maxZoom)));
++
++        if (node.zoom >= targetZoom) {
++            if (node.zoom < minZoom) {
++                continue;
++            }
++            node.wrap = wrapFor(centerCoord[0], tile);
++            // GL JS's sort key: the tile's own x/y against the center at the nominal zoom.
++            const double dx = numTiles * centerCoord[0] - 0.5 - node.x;
++            const double dy = numTiles * centerCoord[1] - 0.5 - node.y;
++            result.push_back(
++                {OverscaledTileID(
++                     node.zoom == maxZoom ? overscaledZoom : node.zoom, node.wrap, node.zoom, node.x, node.y),
++                 dx * dx + dy * dy});
++            continue;
++        }
++        for (int i = 0; i < 4; i++) {
++            stack.push_back({.zoom = static_cast<uint8_t>(node.zoom + 1),
++                             .x = (node.x << 1) + (i % 2),
++                             .y = (node.y << 1) + (i >> 1),
++                             .wrap = node.wrap,
++                             .fullyVisible = node.fullyVisible});
++        }
++    }
++
++    std::sort(
++        result.begin(), result.end(), [](const ResultTile& a, const ResultTile& b) { return a.sqrDist < b.sqrDist; });
++    std::vector<OverscaledTileID> ids;
++    ids.reserve(result.size());
++    for (const auto& tile : result) {
++        ids.push_back(tile.id);
++    }
++    return ids;
++}
++
++} // namespace globe
++} // namespace
++
++std::vector<OverscaledTileID> tileCover(const TileCoverParameters& state,
++                                        uint8_t z,
++                                        const Range<uint8_t> zoomRange,
++                                        const std::optional<uint8_t>& overscaledZ) {
++    if (state.transformState.isGlobeRendering()) {
++        return globe::tileCover(state, z, zoomRange, overscaledZ);
++    }
++
+     struct Node {
+         AABB aabb;
+         uint8_t zoom;
+@@ -202,8 +656,12 @@ std::vector<OverscaledTileID> tileCover(const TileCoverParameters& state,
+ 
+     const vec3 centerCoord = {{centerPoint.x, centerPoint.y, 0.0}};
+ 
+-    assert(transform.getFreeCameraOptions().position);
+-    const vec3 cameraPositionMercator = *transform.getFreeCameraOptions().position;
++    const std::optional<vec3> cameraPosition = transform.getFreeCameraOptions().position;
++    assert(cameraPosition);
++    if (!cameraPosition) {
++        return {};
++    }
++    const vec3& cameraPositionMercator = *cameraPosition;
+     const double nominalScale = std::pow(2.0, z);
+     const vec3 cameraCoord = vec3Scale(cameraPositionMercator, nominalScale);
+     const double cameraToCenterDistanceMercator = vec3Length(vec3Sub(cameraCoord, centerCoord)) / worldSize;
+diff --git a/src/mln/util/tile_cover.hpp b/src/mln/util/tile_cover.hpp
+index 0640d0feafa16e366e013a7890ed0086ff12520a..882745774ef81058c82a24de2e0347c3dd05777c 100644
+--- a/src/mln/util/tile_cover.hpp
++++ b/src/mln/util/tile_cover.hpp
+@@ -34,7 +34,8 @@ private:
+ };
+ 
+ struct TileCoverParameters {
+-    TransformState transformState;
++    /// Must outlive these parameters.
++    const TransformState& transformState;
+     double tileLodMinRadius = 3;
+     double tileLodScale = 1;
+     double tileLodPitchThreshold = (60.0 / 180.0) * std::numbers::pi;
+diff --git a/test/util/tile_cover.test.cpp b/test/util/tile_cover.test.cpp
+index d596635807c95656ee0fa9404dc4e7757a1ed9fe..c6f37fde5c028334deecf5a70371b1cd2c984f92 100644
+--- a/test/util/tile_cover.test.cpp
++++ b/test/util/tile_cover.test.cpp
+@@ -1,6 +1,7 @@
+ #include <mln/util/tile_cover.hpp>
+ #include <mln/util/geo.hpp>
+ #include <mln/map/transform.hpp>
++#include <mln/style/projection_definition.hpp>
+ #include <mln/math/angles.hpp>
+ 
+ #include <algorithm>
+@@ -639,3 +640,106 @@ TEST(TileCover, DISABLED_FuzzLine) {
+         };
+     }
+ }
++
++namespace {
++
++void setUpGlobe(
++    Transform& transform, const Size& size, const LatLng& center, double zoom, double pitch = 0, double bearing = 0) {
++    transform.resize(size);
++    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective"));
++    transform.setMaxPitch(80.0);
++    transform.jumpTo(CameraOptions().withCenter(center).withZoom(zoom).withPitch(pitch).withBearing(bearing));
++    EXPECT_TRUE(transform.getState().isGlobeRendering());
++}
++
++} // namespace
++
++// The globe cases of GL JS `covering_tiles.test.ts`, same cameras, same tiles in the same order.
++TEST(TileCover, GlobeZoomedOut) {
++    Transform transform;
++    setUpGlobe(transform, {128, 128}, {0.0, 0.0}, -1.0);
++    EXPECT_EQ((std::vector<OverscaledTileID>{{0, 0, 0}}), util::tileCover({transform.getState()}, 0, zoomRange));
++}
++
++TEST(TileCover, GlobeZoomedIn) {
++    Transform transform;
++    setUpGlobe(transform, {128, 128}, {0.01, -0.02}, 3.0);
++    EXPECT_EQ((std::vector<OverscaledTileID>{{3, 3, 3}, {3, 3, 4}, {3, 4, 3}, {3, 4, 4}}),
++              util::tileCover({transform.getState()}, 3, zoomRange));
++}
++
++TEST(TileCover, GlobeZoomedInLargeViewport) {
++    Transform transform;
++    setUpGlobe(transform, {512, 512}, {0.01, -0.02}, 3.0);
++    EXPECT_EQ((std::vector<OverscaledTileID>{
++                  {3, 3, 3}, {3, 3, 4}, {3, 4, 3}, {3, 4, 4}, {3, 2, 3}, {3, 2, 4}, {3, 5, 3}, {3, 5, 4}}),
++              util::tileCover({transform.getState()}, 3, zoomRange));
++}
++
++TEST(TileCover, GlobePitched) {
++    Transform transform;
++    setUpGlobe(transform, {128, 128}, {0.001, -0.002}, 8.0, 80.0);
++    EXPECT_EQ((std::vector<OverscaledTileID>{
++                  {6, 32, 31}, {6, 31, 31}, {10, 511, 512}, {10, 512, 512}, {10, 511, 513}, {10, 512, 513}}),
++              util::tileCover({transform.getState()}, 8, zoomRange));
++}
++
++TEST(TileCover, GlobePitchedAndRotated) {
++    Transform transform;
++    setUpGlobe(transform, {128, 128}, {0.001, -0.002}, 8.0, 80.0, 45.0);
++    EXPECT_EQ((std::vector<OverscaledTileID>{
++                  {7, 64, 64}, {7, 64, 63}, {7, 63, 63}, {10, 510, 512}, {10, 511, 512}, {10, 511, 513}}),
++              util::tileCover({transform.getState()}, 8, zoomRange));
++}
++
++TEST(TileCover, GlobeAntimeridian) {
++    Transform east;
++    setUpGlobe(east, {128, 128}, {-0.001, 179.99}, 5.0);
++    EXPECT_EQ((std::vector<OverscaledTileID>{
++                  {5, 31, 16}, {5, 31, 15}, {5, 1, CanonicalTileID{5, 0, 16}}, {5, 1, CanonicalTileID{5, 0, 15}}}),
++              util::tileCover({east.getState()}, 5, zoomRange));
++
++    Transform west;
++    setUpGlobe(west, {128, 128}, {0.001, -179.99}, 5.0);
++    EXPECT_EQ((std::vector<OverscaledTileID>{
++                  {5, 0, 15}, {5, 0, 16}, {5, -1, CanonicalTileID{5, 31, 15}}, {5, -1, CanonicalTileID{5, 31, 16}}}),
++              util::tileCover({west.getState()}, 5, zoomRange));
++}
++
++TEST(TileCover, GlobeBelowZoomZero) {
++    Transform transform;
++    setUpGlobe(transform, {128, 128}, {80.0, 0.0}, -0.5);
++    EXPECT_EQ(0, transform.getState().getIntegerZoom());
++    EXPECT_EQ((std::vector<OverscaledTileID>{{0, 0, 0}}),
++              util::tileCover({transform.getState()}, 0, Range<uint8_t>(0, 0)));
++}
++
++TEST(TileCover, GlobeAtTheHandOffZoom) {
++    Transform transform;
++    setUpGlobe(transform, {128, 128}, {-0.087, -179.73}, 11.0);
++    EXPECT_EQ((std::vector<OverscaledTileID>{{11, 1, 1024}}),
++              util::tileCover({transform.getState()}, 11, Range<uint8_t>(0, 15)));
++}
++
++TEST(TileCover, GlobeHidesTheFarSide) {
++    Transform transform;
++    setUpGlobe(transform, {512, 512}, {0.0, 0.0}, 3.0);
++    const auto cover = util::tileCover({transform.getState()}, 3, zoomRange);
++    const auto has = [&](uint32_t x, uint32_t y) {
++        return std::ranges::find(cover, OverscaledTileID{3, x, y}) != cover.end();
++    };
++    EXPECT_TRUE(has(3, 3));
++    EXPECT_TRUE(has(4, 4));
++    // Tiles on the far side of the planet (lng 135..180 at the equator) are not covered.
++    EXPECT_FALSE(has(7, 3));
++    EXPECT_FALSE(has(0, 4));
++    EXPECT_LT(cover.size(), 64u);
++}
++
++TEST(TileCover, GlobeZoomZeroIsTheWholePlanet) {
++    Transform transform;
++    transform.resize({512, 512});
++    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective"));
++    transform.jumpTo(CameraOptions().withCenter(LatLng{40.0, 10.0}).withZoom(0.0));
++    EXPECT_EQ((std::vector<OverscaledTileID>{{0, 0, 0}}), util::tileCover({transform.getState()}, 0, zoomRange));
++}

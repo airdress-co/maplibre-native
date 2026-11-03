@@ -1,0 +1,1316 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Carmack <johncarmack@me.com>
+Date: Wed, 26 Aug 2026 18:22:36 +0000
+Subject: [PATCH] Globe 06/13, phase 6: unproject, gesture, ease and constrain
+ on the globe
+
+Imported from maplibre/maplibre-native#4533 at bec8a12440d0c8a3bd320f151e1b16de39285705,
+first-parent commits 2f7bcd9ebf..2f7bcd9ebf (1).
+---
+ include/mln/style/projection_definition.hpp   |  27 ++-
+ metrics/ignores/platform-android-vulkan.json  |   3 +-
+ metrics/ignores/platform-android.json         |   3 +-
+ metrics/ignores/platform-linux-opengl.json    |   3 +-
+ metrics/ignores/windows-egl.json              |   3 +-
+ metrics/ignores/windows-opengl.json           |   3 +-
+ .../globe/minzoom-pole/expected.png           | Bin 0 -> 3067 bytes
+ .../projection/globe/minzoom-pole/style.json  |  68 ++++++
+ src/mln/map/map_impl.cpp                      |   3 +
+ src/mln/map/transform.cpp                     |  11 +-
+ src/mln/map/transform_state.cpp               | 105 ++++++++-
+ src/mln/map/transform_state.hpp               |  19 +-
+ .../map/vertical_perspective_projection.cpp   | 219 +++++++++++++++++-
+ .../map/vertical_perspective_projection.hpp   |  22 ++
+ src/mln/renderer/render_layer.cpp             |   3 +-
+ src/mln/renderer/render_tile.cpp              |   4 +-
+ .../renderer/sources/render_image_source.cpp  |   2 +-
+ src/mln/style/conversion/constant.cpp         |  17 +-
+ src/mln/style/expression/coercion.cpp         |  14 +-
+ src/mln/style/projection_definition.cpp       |  57 ++++-
+ test/map/transform.test.cpp                   | 216 ++++++++++++++++-
+ 21 files changed, 741 insertions(+), 61 deletions(-)
+ create mode 100644 metrics/integration/render-tests/projection/globe/minzoom-pole/expected.png
+ create mode 100644 metrics/integration/render-tests/projection/globe/minzoom-pole/style.json
+
+diff --git a/include/mln/style/projection_definition.hpp b/include/mln/style/projection_definition.hpp
+index d35783a49a743a41a512b192cd9171e5896208f3..b42f33a81a081e3174ec8dd5dd1587eb74d92614 100644
+--- a/include/mln/style/projection_definition.hpp
++++ b/include/mln/style/projection_definition.hpp
+@@ -2,18 +2,35 @@
+ 
+ #include <mln/util/feature.hpp>
+ 
++#include <cstdint>
++#include <optional>
+ #include <string>
++#include <string_view>
+ 
+ namespace mln {
+ 
++/// The names the style's `projection.type` accepts.
++enum class ProjectionType : uint8_t {
++    Mercator,
++    VerticalPerspective,
++    /// The vertical perspective that hands over to Mercator between zoom 11 and 12.
++    Globe,
++};
++
++std::string_view projectionTypeName(ProjectionType);
++std::optional<ProjectionType> projectionTypeFromName(std::string_view);
++
+ /// The value of the style's `projection.type`: a single projection, or a transition between two.
+ struct ProjectionDefinition {
+     ProjectionDefinition() = default;
+-    explicit ProjectionDefinition(std::string type);
+-    ProjectionDefinition(std::string from_, std::string to_, double transition_);
+-
+-    std::string from = "mercator";
+-    std::string to = "mercator";
++    explicit ProjectionDefinition(ProjectionType type);
++    ProjectionDefinition(ProjectionType from_, ProjectionType to_, double transition_);
++    /// From a projection name; asserts the name is one of `projectionTypeName`'s.
++    explicit ProjectionDefinition(std::string_view name);
++    ProjectionDefinition(std::string_view from_, std::string_view to_, double transition_);
++
++    ProjectionType from = ProjectionType::Mercator;
++    ProjectionType to = ProjectionType::Mercator;
+     double transition = 1;
+ 
+     bool operator==(const ProjectionDefinition&) const = default;
+diff --git a/metrics/ignores/platform-android-vulkan.json b/metrics/ignores/platform-android-vulkan.json
+index 69a797c64c24b55ba00e41933b8e2bd65c48d686..833872c8ec954e37085bd34d59cc00cc6defce67 100644
+--- a/metrics/ignores/platform-android-vulkan.json
++++ b/metrics/ignores/platform-android-vulkan.json
+@@ -5,5 +5,6 @@
+   "render-tests/projection/globe/fill-grid-pitched": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+   "render-tests/projection/globe/background": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+   "render-tests/projection/globe/fill-planet-solid": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-planet-tiles": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
++  "render-tests/projection/globe/fill-planet-tiles": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
++  "render-tests/projection/globe/minzoom-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
+ }
+diff --git a/metrics/ignores/platform-android.json b/metrics/ignores/platform-android.json
+index 3c43a6666224816c018fc4a2ef77f25ee0fb2f33..a23bc14a70ba8b9e1bfa1d06beaf790146f323fc 100644
+--- a/metrics/ignores/platform-android.json
++++ b/metrics/ignores/platform-android.json
+@@ -20,5 +20,6 @@
+     "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/platform-linux-opengl.json b/metrics/ignores/platform-linux-opengl.json
+index 69871ee39872bc6180b71ec42e1df62a7f9fb3eb..4cd3ed06780cba59aa5daedeea2403a2fec5faf3 100644
+--- a/metrics/ignores/platform-linux-opengl.json
++++ b/metrics/ignores/platform-linux-opengl.json
+@@ -3,5 +3,6 @@
+   "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+   "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+   "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-  "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++  "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++  "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/windows-egl.json b/metrics/ignores/windows-egl.json
+index e11d55cb70764d9aeea3c41682f610a701499105..d290501bd2de6b639c1f0efd9d9672dfd2bda545 100644
+--- a/metrics/ignores/windows-egl.json
++++ b/metrics/ignores/windows-egl.json
+@@ -10,5 +10,6 @@
+     "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/ignores/windows-opengl.json b/metrics/ignores/windows-opengl.json
+index 800a552d895425b59016b3a5eaf86cc67778ceef..d95d5335282f8982cb6d54c21439367d58c2ffa8 100644
+--- a/metrics/ignores/windows-opengl.json
++++ b/metrics/ignores/windows-opengl.json
+@@ -10,5 +10,6 @@
+     "render-tests/projection/globe/fill-grid-pitched": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/background": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+     "render-tests/projection/globe/fill-planet-solid": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
+-    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
++    "render-tests/projection/globe/fill-planet-tiles": "The globe expected images were rendered on Metal; this platform has no expectation of its own.",
++    "render-tests/projection/globe/minzoom-pole": "The globe expected images were rendered on Metal; this platform has no expectation of its own."
+ }
+diff --git a/metrics/integration/render-tests/projection/globe/minzoom-pole/expected.png b/metrics/integration/render-tests/projection/globe/minzoom-pole/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..a061f2a3c640c442fe19430f746b65084c60191d
+GIT binary patch
+literal 3067
+zcmd^>ZBSEJ8pqE~fTV!N7A-E83rN&$p@=oDZ1GAoXmW$a5CWkpBx+|{#un*n8@x!k
+zzEteG8cFNRGDx9>lH4G{Ei+Qtgxi;qX}6ASCf70@OtMSYE~i~@S~&$1gBxo<^~>(;
+ze(d>j&df8<ne&|Uod56trlwRmFEK3<05FeK6>9+y#FhdePKZs@4Zbh{Ngt8L>vaw7
+z|GHjMm#$nGzn*V?rRMl0qay9xQ@PgYH3o_^zdkfR<BLp6VoAS@Vdk%m%*{2Hppg_X
+z`_Xk#^cK7)0#&8ap~$NMtZ`=SE=mMJ3@O&CQ2+yV6-9&Z>+YQg!MDR%)jeTe3<6BX
+zUpVJI4+y!!We0YnKstSv$&la40;~d#mYS16s589dtqcKJYcqfH)hGZGCL{NL_%IZy
+z&Eosv_161gyP1}4LMCx6Po&&c*?bmE*vv+m5}6X&H=uIk-il@yXx9}<+lIrDcw=w)
+zZ)01zz-q9>XL;j#-&{X7TO5`DGo1_k28`G<;@!@0qo~0h&Ketbjx^JHX4DWaYZ3vM
+z*5aAojR=tI!l@}IjDRXFam#xK7GhOu0(v`OBUZJ6xan<$!`Qh>BIsSjnd0(KQ-eJ@
+zPW~ZdBC0Ae=>m(`G1z+MR-b1joyAS&5@k&<0)<2QJoTrr9~{+KF6wlFbUB0XaP)bK
+z=wia-6>}zW$WHC+X=V6_gRi48b+$gRf_()ZJiV#kvxVN~n|$J`rl}X4Wt0_dj&Kc@
+zS7vd@cA*=BcCE!O+l!)t$F!E-!3`)~_^sCR-k=r{!k4v{p23}{T6n;LlePbVk%U<t
+zamxD{H#0A^4Hc;O*gbpcdv;|RRgT=kyE;qP^c6TP3JK+j439T_K*jZ}(Fck`S~N?3
+zpA8zS2+F#SnE?&0R7l#S<FU{qXq*f;qdaijsVwz=%|$?NA6`JdqvwSKc4|V}WN@dj
+zhv1I4rkhYHIPOqB=lub?!J}oCKiZ<)FqYeiKSf5ICgHj5#7^r;Juk|?NU_p%mtSJk
+zq6YF=gFBmj0shsxuNrlL6o;t9`x@6M*!(V@Lw=#>6Y~#Jc4@W2ox=uUt973Nd4SL<
+zQhS@Yh#;B4SCBJ$J~_XWIw!qhaIa>Ku*^EW9r=OKAtJqdxkh2~yLdKvP0!EIr>SF7
+z!r(4s0nD;aA3(RjMe2z3H7+7N0x_$vf|o3Cj4HJTw?f{D<75+>j~%2Mq=+kwTib`H
+zlao6B;ZP@4FFjH2R>u1DVymnM<zW(g%O-CFHypRN6Hg;2EBHt1-=|)Xp4jHz!k&N!
+zTV-`<9kzxMZSoFrk+=yPo=Q&Y`Gxg|sVeCSgS(ua2Y0l}%%~JwV{h5$o#hJSxA)<T
+z$lE%8QGFMskzOr#>tlaleXDE>s=-nj(MIoDt}%YQ4NoC&SMZP4AEZ>$t9th~HXdfR
+z$_%IuOSQKYdk=8K@$EXxG24FUOj1D?zJR=4$*0zDATq5tFZfpmk5F>y)opGA`w*g4
+zZI`GK`Y`<Nl&l$@#6-T2vufvHx^TX|Md7{66(&5Uk+j(EI8Dg~o%nq6ww_;HFDD+e
+z-gNm_8G9+2^g_A&MRq<is<!r0*XVTk;i<t=)PWWH4rkS#hlKETyGY@EmTOG-RwFrT
+zdySb%9`C}F$!~Q0uLcyvV(WE>f3>lN%KwiWJ;RJ{@KW4x!pj=T8#ct4=8bpaiR3pG
+zeA>WzVxjfA)Bm*bF!gKc1-*MWn}9T`tuE>ddLHaLHCTiCu_Zo5R;?RW3!kyK{Cp!j
+zp7cMQ=>IN_>;CUAJ4jOn(yIpdE*3-es<sho^uep`L1t`)Pq?(!52J!oyQtXvXD$-o
+zu95uw`L)DS>rJQs$)Et8Qnk6LOLUS?v9#6$ZwT@<k~eL47*o=aidb&F>G0<SH=s^c
+zTQB9Jleoi6YdfG@kf)RU-nO5aNgS#op0HkV`5zA^paE6d2-Qn3@qN6s_AWdxsMAP}
+z+rD#}5{F14&wAy8e?@Q;VpVCEsCVckoG`m~0yYWiDlLDoeaDy{YLF8$>lLSeS&TJf
+zsx%jMmTvLw%C2pPgaFq`PTF2&X2daVde$0-=>h=?si4y&7W+QVcDVdmnOcj*)=xFl
+z8bWTp45QdiBqk{jWuh^kLOOK^-oO$xl2+T-PLpVHF|o<o;q)&tW}-}z>ZkV5ANsnb
+zQ*-b<mY|coWs50Q!eSj!YQ5$3ry7k&PF{9V2KqxTd)ZVNR%6RGlGC<toTm75#YCmG
+z-|0^=E=5N2azC|&{?ymKZ0Z0y2~wDr67L<DjxDdSoV87I5o~imzUoI6tdbKiSbxy-
+z2?NKd&!w-p{7J?v)Jc9><4$FF!m^)Klo@^QXHq*veI<>KP^t7;`)H|GiEyw|E9tOV
+zAOULL!wC{^j$Ok$(>Gy6RMU^IpE|*rBta3qP!}NBEoiZN592XC0D%IX7v8NTPCkG{
+z4<+qc<mA(W+mJ?`QyF-gU5={MITeA`Y#w?^oudn^VzW?#dbK{Vl6@Q<Q?ITJJjpJD
+zt4{xx@#yIiuKNMCF4;#b(mn{U!|KW<eX`%7Ccy-QKVSO^9FA+)Obq>qzf<;6{S!`J
+zl38IHxX(v+0bF&aqtCO3?(%j2#877R`OEKzJ>Y1iWpJMoRb!jG@ZD3N!A8M3HSy&G
+z7+;{+o@~w}95_OK-a~LRf`PXwU(b`ANibleCVE^9FEs8)V<jV%0U_)3b+3%tJ;EO?
+z0N+11ht;^u;^}_Kr_%<X<&eKDdR`cMGkkEYjSD;tmT;1z*Bx_buyKdEKxRTSNi2yJ
+z?|#6H=s{j(QEpnyeZ<9jIlFt6bEE{|+M<HA?r>pTrnX4_eMq=~$&l`!#l)QC?X`Eo
+z5hyCb&0r_WUT#?jx?)DCC4;Vtj(^%Mk=xB6ur+ED(aoIY?~rRYfZ57uRlhcBilfV6
+z%f2%(X38cQ^Giy{Tp^G%=3~Sx$Uhdo_`|p`M!C@&*%FWv>J<JmoGJkA(-M&9bw_-U
+QOYfIVZY(YC-(WoSZ>ovwv;Y7A
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/integration/render-tests/projection/globe/minzoom-pole/style.json b/metrics/integration/render-tests/projection/globe/minzoom-pole/style.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..1471a8757b50d843a01e8081d4b2edb957481690
+--- /dev/null
++++ b/metrics/integration/render-tests/projection/globe/minzoom-pole/style.json
+@@ -0,0 +1,68 @@
++{
++  "version": 8,
++  "metadata": {
++    "test": {
++      "description": "A layer with minzoom 0 stays visible at zoom -1.5 on the globe.",
++      "width": 512,
++      "height": 512
++    }
++  },
++  "center": [
++    0.0,
++    80.0
++  ],
++  "zoom": -1.5,
++  "projection": {
++    "type": "globe"
++  },
++  "sources": {
++    "land": {
++      "type": "geojson",
++      "data": {
++        "type": "Polygon",
++        "coordinates": [
++          [
++            [
++              -180,
++              -85.0511287798
++            ],
++            [
++              180,
++              -85.0511287798
++            ],
++            [
++              180,
++              85.0511287798
++            ],
++            [
++              -180,
++              85.0511287798
++            ],
++            [
++              -180,
++              -85.0511287798
++            ]
++          ]
++        ]
++      }
++    }
++  },
++  "layers": [
++    {
++      "id": "background",
++      "type": "background",
++      "paint": {
++        "background-color": "#202040"
++      }
++    },
++    {
++      "id": "land",
++      "type": "fill",
++      "source": "land",
++      "minzoom": 0,
++      "paint": {
++        "fill-color": "#cceeff"
++      }
++    }
++  ]
++}
+diff --git a/src/mln/map/map_impl.cpp b/src/mln/map/map_impl.cpp
+index 5ceb1fdd18393b1e1538292d1b82f0ee653f4245..d2c924c3ba5a07dde0a865d4d2e6e92c93a87e15 100644
+--- a/src/mln/map/map_impl.cpp
++++ b/src/mln/map/map_impl.cpp
+@@ -321,6 +321,9 @@ void Map::Impl::onDidFinishRenderingMap() {
+ 
+ void Map::Impl::jumpTo(const CameraOptions& camera) {
+     cameraMutated = true;
++    // The style's projection decides how the camera is constrained, so it has to be in place first.
++    transform.setProjectionDefinition(
++        style->impl->getProjection()->impl->evaluate(static_cast<float>(camera.zoom.value_or(transform.getZoom()))));
+     transform.jumpTo(camera);
+     onUpdate();
+ }
+diff --git a/src/mln/map/transform.cpp b/src/mln/map/transform.cpp
+index 61b0df05a2bdd265a86fe6d1ed3438f941b5dae4..6e72424329c6b445220bbd8a4b26b92bef24ebc2 100644
+--- a/src/mln/map/transform.cpp
++++ b/src/mln/map/transform.cpp
+@@ -1,5 +1,6 @@
+ #include <mln/map/camera.hpp>
+ #include <mln/map/transform.hpp>
++#include <mln/map/vertical_perspective_projection.hpp>
+ #include <mln/util/constants.hpp>
+ #include <mln/util/mat4.hpp>
+ #include <mln/util/math.hpp>
+@@ -118,6 +119,10 @@ void Transform::easeTo(const CameraOptions& inputCamera, const AnimationOptions&
+     }
+ 
+     double zoom = camera.zoom.value_or(getZoom());
++    if (!camera.zoom && camera.center && state.isGlobeRendering()) {
++        zoom += VerticalPerspectiveProjection::zoomAdjustment(getLatLng().latitude(),
++                                                              state.constrainedCenter(*camera.center).latitude());
++    }
+     state.constrainCameraAndZoomToBounds(camera, zoom);
+ 
+     const EdgeInsets& padding = camera.padding.value_or(state.getEdgeInsets());
+@@ -157,7 +162,7 @@ void Transform::easeTo(const CameraOptions& inputCamera, const AnimationOptions&
+     const Point<double> endPoint = Projection::project(latLng, state.getScale());
+ 
+     // Constrain camera options.
+-    zoom = util::clamp(zoom, state.getMinZoom(), state.getMaxZoom());
++    zoom = util::clamp(zoom, state.getMinZoomAtLatitude(latLng.latitude()), state.getMaxZoom());
+     pitch = util::clamp(pitch, state.getMinPitch(), state.getMaxPitch());
+     fov = util::clamp(fov, state.getMinFieldOfView(), state.getMaxFieldOfView());
+ 
+@@ -251,7 +256,7 @@ void Transform::flyTo(const CameraOptions& inputCamera,
+     const Point<double> endPoint = Projection::project(latLng, state.getScale());
+ 
+     // Constrain camera options.
+-    zoom = util::clamp(zoom, state.getMinZoom(), state.getMaxZoom());
++    zoom = util::clamp(zoom, state.getMinZoomAtLatitude(latLng.latitude()), state.getMaxZoom());
+     pitch = util::clamp(pitch, state.getMinPitch(), state.getMaxPitch());
+     fov = util::clamp(fov, state.getMinFieldOfView(), state.getMaxFieldOfView());
+ 
+@@ -287,7 +292,7 @@ void Transform::flyTo(const CameraOptions& inputCamera,
+     double rho = 1.42;
+     if (animation.minZoom || linearZoomInterpolation) {
+         double minZoom = util::min(animation.minZoom.value_or(startZoom), startZoom, zoom);
+-        minZoom = util::clamp(minZoom, state.getMinZoom(), state.getMaxZoom());
++        minZoom = util::clamp(minZoom, state.getMinZoomAtLatitude(latLng.latitude()), state.getMaxZoom());
+         /// w<sub>m</sub>: Maximum visible span, measured in pixels with respect
+         /// to the initial scale.
+         double wMax = w0 / state.zoomScale(minZoom - startZoom);
+diff --git a/src/mln/map/transform_state.cpp b/src/mln/map/transform_state.cpp
+index 40f5ce09ce9ab8b66183762bd29eccca7a44cf46..1641778f6e4909c7ce1ef92050473f84f5ea4e1f 100644
+--- a/src/mln/map/transform_state.cpp
++++ b/src/mln/map/transform_state.cpp
+@@ -117,15 +117,18 @@ void TransformState::setProperties(const TransformStateProperties& properties) {
+ 
+ namespace {
+ 
+-// GL JS `GlobeProjection.transitionState`
++// GL JS `GlobeProjection.transitionState`.
+ double transitionStateFor(const ProjectionDefinition& definition) {
++    const auto isGlobe = [](ProjectionType type) {
++        return type != ProjectionType::Mercator;
++    };
+     if (definition.from == definition.to) {
+-        return definition.from == "mercator" ? 0 : 1;
++        return isGlobe(definition.from) ? 1 : 0;
+     }
+-    if (definition.from == "vertical-perspective" && definition.to == "mercator") {
++    if (isGlobe(definition.from) && !isGlobe(definition.to)) {
+         return 1 - definition.transition;
+     }
+-    if (definition.from == "mercator" && definition.to == "vertical-perspective") {
++    if (!isGlobe(definition.from) && isGlobe(definition.to)) {
+         return definition.transition;
+     }
+     return 1;
+@@ -134,7 +137,6 @@ double transitionStateFor(const ProjectionDefinition& definition) {
+ } // namespace
+ 
+ void TransformState::setProjectionDefinition(const ProjectionDefinition& definition) {
+-    projectionDefinition = definition;
+     const double transition = transitionStateFor(definition);
+     if (transition == projectionTransition) {
+         return;
+@@ -147,6 +149,7 @@ void TransformState::setProjectionDefinition(const ProjectionDefinition& definit
+         }
+     }
+     projectionTransition = transition;
++    requestMatricesUpdate = true;
+ }
+ 
+ // MARK: - Matrix
+@@ -308,21 +311,19 @@ void TransformState::updateStateFromCamera() {
+     // Compute zoom level from the camera altitude
+     const double centerDistance = getCameraToCenterDistance();
+     double zoom;
+-    double newScale;
+     double travel;
+     if (dz < -1.0e-9 && position[2] > 1.0e-9 && newPitch <= maxMercatorHorizonAngle) {
+         zoom = util::log2(centerDistance / (position[2] / std::cos(newPitch) * util::tileSize_D));
+-        newScale = util::clamp(std::pow(2.0, zoom), min_scale, max_scale);
+         travel = -position[2] / dz;
+     } else {
+         zoom = 14;
+-        newScale = util::clamp(std::pow(2.0, zoom), min_scale, max_scale);
++        const double newScale = util::clamp(std::pow(2.0, zoom), min_scale, max_scale);
+         travel = centerDistance / newScale / util::tileSize_D;
+     }
+ 
+     // Compute center point of the map
+     const Point<double> mercatorPoint = {position[0] + dx * travel, position[1] + dy * travel};
+-    setLatLngZoom(latLngFromMercator(mercatorPoint), scaleZoom(newScale));
++    setLatLngZoom(latLngFromMercator(mercatorPoint), std::min(zoom, scaleZoom(max_scale)));
+ 
+     const double mercatorZ = position[2] + dz * travel;
+     double alt_m = mercatorZ * Projection::getMetersPerPixelAtLatitude(getLatLng().latitude(), 0) * util::tileSize_D;
+@@ -416,6 +417,42 @@ void TransformState::updateMatricesIfNeeded() const {
+     if (err) throw std::runtime_error("failed to invert coordinatePointMatrix");
+ 
+     requestMatricesUpdate = false;
++
++    if (isGlobeRendering()) {
++        globeRadius = VerticalPerspectiveProjection::globeRadiusPixels(Projection::worldSize(scale),
++                                                                       getLatLng().latitude());
++        globeViewProjection = VerticalPerspectiveProjection::globeViewProjectionMatrix(*this, globeRadius);
++        if (matrix::invert(invGlobeViewProjection, globeViewProjection)) {
++            matrix::identity(invGlobeViewProjection);
++        }
++        globeClippingPlane = VerticalPerspectiveProjection::clippingPlane(*this, globeRadius);
++        globeCameraPosition = VerticalPerspectiveProjection::cameraPosition(*this, globeRadius);
++    }
++}
++
++double TransformState::getGlobeRadiusPixels() const {
++    updateMatricesIfNeeded();
++    return globeRadius;
++}
++
++const mat4& TransformState::getGlobeViewProjectionMatrix() const {
++    updateMatricesIfNeeded();
++    return globeViewProjection;
++}
++
++const mat4& TransformState::getInverseGlobeViewProjectionMatrix() const {
++    updateMatricesIfNeeded();
++    return invGlobeViewProjection;
++}
++
++const vec4& TransformState::getGlobeClippingPlane() const {
++    updateMatricesIfNeeded();
++    return globeClippingPlane;
++}
++
++const vec3& TransformState::getGlobeCameraPosition() const {
++    updateMatricesIfNeeded();
++    return globeCameraPosition;
+ }
+ 
+ const mat4& TransformState::getProjectionMatrix() const {
+@@ -562,8 +599,23 @@ double TransformState::getZoom() const {
+     return scaleZoom(scale);
+ }
+ 
++double TransformState::getMinZoomAtLatitude(double latitude) const {
++    const double minZoom = getMinZoom();
++    if (!isGlobeRendering()) {
++        return minZoom;
++    }
++    return minZoom + VerticalPerspectiveProjection::zoomAdjustment(0, latitude);
++}
++
++LatLng TransformState::constrainedCenter(const LatLng& latLng) const {
++    if (constrainMode == ConstrainMode::None || !isGlobeRendering()) {
++        return latLng;
++    }
++    return {util::clamp(latLng.latitude(), -util::LATITUDE_MAX, util::LATITUDE_MAX), latLng.longitude()};
++}
++
+ uint8_t TransformState::getIntegerZoom() const {
+-    return static_cast<uint8_t>(getZoom());
++    return static_cast<uint8_t>(std::max(0.0, getZoom()));
+ }
+ 
+ double TransformState::getZoomFraction() const {
+@@ -815,6 +867,10 @@ ScreenCoordinate TransformState::latLngToScreenCoordinate(const LatLng& latLng,
+         return {};
+     }
+ 
++    if (isGlobeRendering()) {
++        return VerticalPerspectiveProjection::latLngToScreenCoordinate(*this, latLng, p);
++    }
++
+     Point<double> pt = projection->project(latLng, scale) / util::tileSize_D;
+     vec4 c = {{pt.x, pt.y, 0, 1}};
+     matrix::transformMat4(p, c, getCoordMatrix());
+@@ -826,6 +882,14 @@ TileCoordinate TransformState::screenCoordinateToTileCoordinate(const ScreenCoor
+         return {.p = {}, .z = 0};
+     }
+ 
++    if (isGlobeRendering()) {
++        const Point<double> p = Projection::project(VerticalPerspectiveProjection::screenCoordinateToLatLng(
++                                                        *this, point, LatLng::Unwrapped),
++                                                    scale) /
++                                util::tileSize_D * static_cast<double>(1 << atZoom);
++        return {.p = {p.x, p.y}, .z = static_cast<double>(atZoom)};
++    }
++
+     float targetZ = 0;
+ 
+     double flippedY = size.height - point.y;
+@@ -856,6 +920,9 @@ TileCoordinate TransformState::screenCoordinateToTileCoordinate(const ScreenCoor
+ }
+ 
+ LatLng TransformState::screenCoordinateToLatLng(const ScreenCoordinate& point, LatLng::WrapMode wrapMode) const {
++    if (isGlobeRendering()) {
++        return VerticalPerspectiveProjection::screenCoordinateToLatLng(*this, point, wrapMode);
++    }
+     auto coord = screenCoordinateToTileCoordinate(point, 0);
+     return projection->unproject(coord.p, 1. / util::tileSize_D, wrapMode);
+ }
+@@ -906,6 +973,13 @@ void TransformState::constrain(double& scale_, double& x_, double& y_) const {
+         return;
+     }
+ 
++    // The globe has no off-world area: the poles stay reachable and only the Mercator range bounds the center.
++    if (isGlobeRendering()) {
++        const double halfWorld = scale_ * util::tileSize_D / 2;
++        y_ = std::max(-halfWorld, std::min(y_, halfWorld));
++        return;
++    }
++
+     // Constrain scale to avoid zooming out far enough to show off-world areas on the Y axis.
+     const double ratioY = (rotatedNorth() ? size.width : size.height) / util::tileSize_D;
+     scale_ = util::max(scale_, ratioY);
+@@ -1051,6 +1125,15 @@ ScreenCoordinate TransformState::getCenterOffset() const {
+ }
+ 
+ void TransformState::moveLatLng(const LatLng& latLng, const ScreenCoordinate& anchor) {
++    if (isGlobeRendering()) {
++        if (const auto center = VerticalPerspectiveProjection::centerForLocationAtPoint(*this, latLng, anchor)) {
++            const LatLng target = constrainedCenter(*center);
++            const double zoom = getZoom() + VerticalPerspectiveProjection::zoomAdjustment(getLatLng().latitude(),
++                                                                                          target.latitude());
++            setLatLngZoom(target, zoom);
++        }
++        return;
++    }
+     auto centerCoord = Projection::project(getLatLng(LatLng::Unwrapped), scale);
+     auto latLngCoord = Projection::project(latLng, scale);
+     auto anchorCoord = Projection::project(screenCoordinateToLatLng(anchor), scale);
+@@ -1061,7 +1144,7 @@ void TransformState::setLatLngZoom(const LatLng& latLng, double zoom) {
+     LatLng constrained = latLng;
+     constrained = bounds.constrain(latLng);
+ 
+-    double newScale = util::clamp(zoomScale(zoom), min_scale, max_scale);
++    double newScale = util::clamp(zoomScale(zoom), zoomScale(getMinZoomAtLatitude(constrained.latitude())), max_scale);
+     const double newWorldSize = newScale * util::tileSize_D;
+     Bc = newWorldSize / util::DEGREES_MAX;
+     Cc = newWorldSize / util::M2PI;
+diff --git a/src/mln/map/transform_state.hpp b/src/mln/map/transform_state.hpp
+index 06400036bc9ff84dc948953d59e2504b561935bb..2ea912ebe5b0a610b0a9a1c24196b49bdf47b131 100644
+--- a/src/mln/map/transform_state.hpp
++++ b/src/mln/map/transform_state.hpp
+@@ -134,10 +134,16 @@ public:
+     void setProperties(const TransformStateProperties& properties);
+ 
+     // Projection
+-    const ProjectionDefinition& getProjectionDefinition() const { return projectionDefinition; }
+     void setProjectionDefinition(const ProjectionDefinition&);
+     /// 0 is Mercator, 1 is the globe, in between is the transition.
+     double getProjectionTransition() const { return projectionTransition; }
++
++    /// The globe's view state for the current camera, valid while `isGlobeRendering()`; cached with the matrices.
++    double getGlobeRadiusPixels() const;
++    const mat4& getGlobeViewProjectionMatrix() const;
++    const mat4& getInverseGlobeViewProjectionMatrix() const;
++    const vec4& getGlobeClippingPlane() const;
++    const vec3& getGlobeCameraPosition() const;
+     bool isGlobeRendering() const { return projectionTransition > 0; }
+ 
+     // Matrix
+@@ -182,6 +188,11 @@ public:
+ 
+     // Zoom
+     double getZoom() const;
++    /// Lowest zoom allowed with the map centered at this latitude: the globe lets the zoom fall below `getMinZoom()`
++    /// toward the poles by the anchored-zoom adjustment, so the planet keeps its size on screen.
++    double getMinZoomAtLatitude(double latitude) const;
++    /// The center `constrain` would settle on for this one, so a zoom adjustment can be computed against it.
++    LatLng constrainedCenter(const LatLng&) const;
+     uint8_t getIntegerZoom() const;
+     double getZoomFraction() const;
+ 
+@@ -313,7 +324,6 @@ private:
+ 
+ private:
+     std::shared_ptr<const ProjectionBase> projection;
+-    ProjectionDefinition projectionDefinition;
+     double projectionTransition = 0;
+ 
+     ConstrainMode constrainMode;
+@@ -348,6 +358,11 @@ private:
+     mutable mat4 invProjectionMatrix;
+     mutable mat4 coordMatrix;
+     mutable mat4 invertedMatrix;
++    mutable double globeRadius = 0;
++    mutable mat4 globeViewProjection;
++    mutable mat4 invGlobeViewProjection;
++    mutable vec4 globeClippingPlane{};
++    mutable vec3 globeCameraPosition{};
+ };
+ 
+ } // namespace mln
+diff --git a/src/mln/map/vertical_perspective_projection.cpp b/src/mln/map/vertical_perspective_projection.cpp
+index d4a70b528a82d56384610b3e4c595bf064961bc3..6fef58e53302a69341444fadb1d9a3e159d7ae5d 100644
+--- a/src/mln/map/vertical_perspective_projection.cpp
++++ b/src/mln/map/vertical_perspective_projection.cpp
+@@ -5,8 +5,11 @@
+ #include <mln/util/constants.hpp>
+ #include <mln/util/projection.hpp>
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <numbers>
++#include <optional>
++#include <tuple>
+ 
+ namespace mln {
+ 
+@@ -30,6 +33,81 @@ vec3 rotateZ(const vec3& v, double rad) {
+     return {{v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]}};
+ }
+ 
++double dot(const vec3& a, const vec3& b) {
++    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
++}
++
++double length(const vec3& v) {
++    return std::sqrt(dot(v, v));
++}
++
++vec3 normalized(const vec3& v) {
++    const double len = length(v);
++    return {{v[0] / len, v[1] / len, v[2] / len}};
++}
++
++vec3 scaled(const vec3& v, double s) {
++    return {{v[0] * s, v[1] * s, v[2] * s}};
++}
++
++vec3 add(const vec3& a, const vec3& b) {
++    return {{a[0] + b[0], a[1] + b[1], a[2] + b[2]}};
++}
++
++struct RaySphereIntersection {
++    double tMin;
++    double tMax;
++};
++
++// GL JS `raySphereIntersection`: the numerically stable form for a unit sphere at the origin.
++std::optional<RaySphereIntersection> raySphereIntersection(const vec3& origin, const vec3& direction) {
++    const double originDotDirection = dot(origin, direction);
++    const vec3 inner = add(origin, scaled(direction, -originDotDirection));
++    const double discriminant = 1.0 - dot(inner, inner);
++    if (discriminant < 0) {
++        return std::nullopt;
++    }
++    const double c = dot(origin, origin) - 1.0;
++    const double q = -originDotDirection + (originDotDirection < 0 ? 1 : -1) * std::sqrt(discriminant);
++    const double t0 = c / q;
++    const double t1 = q;
++    return RaySphereIntersection{std::min(t0, t1), std::max(t0, t1)};
++}
++
++double pointPlaneSignedDistance(const vec4& plane, const vec3& point) {
++    return plane[0] * point[0] + plane[1] * point[1] + plane[2] * point[2] + plane[3];
++}
++
++vec3 rayDirectionFromPixel(const TransformState& state,
++                           const ScreenCoordinate& point,
++                           const mat4& inverseViewProjection) {
++    const Size size = state.getSize();
++    vec4 clip = {{point.x / size.width * 2.0 - 1.0, point.y / size.height * 2.0 - 1.0, 1.0, 1.0}};
++    vec4 world;
++    matrix::transformMat4(world, clip, inverseViewProjection);
++    const vec3 target = {{world[0] / world[3], world[1] / world[3], world[2] / world[3]}};
++    return normalized(add(target, scaled(state.getGlobeCameraPosition(), -1.0)));
++}
++
++// Angle to rotate the vector (x0, y0) onto the direction of (x1, y1).
++double angleToRotateBetweenVectors2D(double x0, double y0, double x1, double y1) {
++    const double len0 = std::sqrt(x0 * x0 + y0 * y0);
++    const double len1 = std::sqrt(x1 * x1 + y1 * y1);
++    x0 /= len0;
++    y0 /= len0;
++    x1 /= len1;
++    y1 /= len1;
++    const double cross = x0 * y1 - x1 * y0;
++    const double angle = std::acos(std::clamp(x0 * x1 + y0 * y1, -1.0, 1.0));
++    return cross > 0 ? angle : -angle;
++}
++
++double distanceOfAnglesRadians(double a, double b) {
++    const double twoPi = 2.0 * std::numbers::pi;
++    const double d = std::fmod(std::fmod(a - b, twoPi) + twoPi, twoPi);
++    return std::min(d, twoPi - d);
++}
++
+ } // namespace
+ 
+ Point<double> VerticalPerspectiveProjection::project(const LatLng& latLng, double scale) const {
+@@ -121,17 +199,152 @@ vec4 VerticalPerspectiveProjection::clippingPlane(const TransformState& state, d
+     return {{plane[0] * scale, plane[1] * scale, plane[2] * scale, -tangentPlaneDistanceToC * scale}};
+ }
+ 
++vec3 VerticalPerspectiveProjection::cameraPosition(const TransformState& state, double radius) {
++    const LatLng center = state.getLatLng();
++    vec3 position = {{0.0, 0.0, state.getCameraToCenterDistance() / radius}};
++    position = rotateZ(position, -state.getRoll());
++    position = rotateX(position, state.getPitch());
++    position = rotateZ(position, state.getBearing());
++    position = add(position, {{0.0, 0.0, 1.0}});
++    position = rotateX(position, -util::deg2rad(center.latitude()));
++    position = rotateY(position, util::deg2rad(center.longitude()));
++    return position;
++}
++
++vec3 VerticalPerspectiveProjection::surfaceVector(const LatLng& latLng) {
++    const double lng = util::deg2rad(latLng.longitude());
++    const double lat = util::deg2rad(latLng.latitude());
++    const double len = std::cos(lat);
++    return {{std::sin(lng) * len, std::sin(lat), std::cos(lng) * len}};
++}
++
++LatLng VerticalPerspectiveProjection::surfaceVectorToLatLng(const vec3& surface) {
++    const double latitude = util::rad2deg(std::asin(std::clamp(surface[1], -1.0, 1.0)));
++    const double lengthXZ = std::sqrt(surface[0] * surface[0] + surface[2] * surface[2]);
++    if (lengthXZ <= 1e-6) {
++        return {latitude, 0.0};
++    }
++    const double acosZ = std::acos(std::clamp(surface[2] / lengthXZ, -1.0, 1.0));
++    const double longitude = util::rad2deg(surface[0] > 0 ? acosZ : -acosZ);
++    return LatLng{latitude, longitude, LatLng::Wrapped};
++}
++
++vec3 VerticalPerspectiveProjection::screenCoordinateToSurface(const TransformState& state,
++                                                              const ScreenCoordinate& point) {
++    const vec3 origin = state.getGlobeCameraPosition();
++    const vec3 direction = rayDirectionFromPixel(state, point, state.getInverseGlobeViewProjectionMatrix());
++
++    if (const auto intersection = raySphereIntersection(origin, direction)) {
++        return normalized(add(origin, scaled(direction, intersection->tMin)));
++    }
++
++    // The ray misses the globe: take the nearest point on the horizon, the circle where the clipping plane cuts the
++    // sphere.
++    const vec4& plane = state.getGlobeClippingPlane();
++    const double directionDotPlane = plane[0] * direction[0] + plane[1] * direction[1] + plane[2] * direction[2];
++    const double originToPlane = pointPlaneSignedDistance(plane, origin);
++    const double distanceToIntersection = -originToPlane / directionDotPlane;
++
++    vec3 planeIntersection;
++    if (distanceToIntersection > 0) {
++        planeIntersection = add(origin, scaled(direction, distanceToIntersection));
++    } else {
++        constexpr double maxRayLength = 2.0;
++        const vec3 distantPoint = add(origin, scaled(direction, maxRayLength));
++        const double distanceFromPlane = pointPlaneSignedDistance(plane, distantPoint);
++        planeIntersection = add(distantPoint, scaled({{plane[0], plane[1], plane[2]}}, -distanceFromPlane));
++    }
++
++    const vec3 horizonCenter = scaled({{plane[0], plane[1], plane[2]}}, -plane[3]);
++    const double horizonRadius = std::sqrt(std::max(0.0, 1.0 - plane[3] * plane[3]));
++    const vec3 relative = add(planeIntersection, scaled(horizonCenter, -1.0));
++    return add(horizonCenter, scaled(relative, horizonRadius / length(relative)));
++}
++
++LatLng VerticalPerspectiveProjection::screenCoordinateToLatLng(const TransformState& state,
++                                                               const ScreenCoordinate& point,
++                                                               LatLng::WrapMode wrapMode) {
++    const LatLng latLng = surfaceVectorToLatLng(screenCoordinateToSurface(state, point));
++    return wrapMode == LatLng::Wrapped ? latLng.wrapped() : latLng;
++}
++
++ScreenCoordinate VerticalPerspectiveProjection::latLngToScreenCoordinate(const TransformState& state,
++                                                                         const LatLng& latLng,
++                                                                         vec4& clip) {
++    const vec3 surface = surfaceVector(latLng);
++    const vec4 position = {{surface[0], surface[1], surface[2], 1.0}};
++    matrix::transformMat4(clip, position, state.getGlobeViewProjectionMatrix());
++    const Size size = state.getSize();
++    return {(clip[0] / clip[3] * 0.5 + 0.5) * size.width, (clip[1] / clip[3] * 0.5 + 0.5) * size.height};
++}
++
++std::optional<LatLng> VerticalPerspectiveProjection::centerForLocationAtPoint(const TransformState& state,
++                                                                              const LatLng& latLng,
++                                                                              const ScreenCoordinate& anchor) {
++    // GL JS `setLocationAtPoint`: solve the rotation that carries the surface point under the pixel onto the target.
++    const LatLng center = state.getLatLng();
++    const vec3 vecToPixelCurrent = screenCoordinateToSurface(state, anchor);
++    const vec3 vecToTarget = surfaceVector(latLng);
++
++    vec3 rotatedPixelVector = rotateY(vecToPixelCurrent, -util::deg2rad(center.longitude()));
++    rotatedPixelVector = rotateX(rotatedPixelVector, util::deg2rad(center.latitude()));
++
++    const double vecToTargetXZLengthSquared = vecToTarget[0] * vecToTarget[0] + vecToTarget[2] * vecToTarget[2];
++    const double targetXSquared = rotatedPixelVector[0] * rotatedPixelVector[0];
++    if (vecToTargetXZLengthSquared < targetXSquared) {
++        return std::nullopt;
++    }
++
++    const double intersectionA = std::sqrt(vecToTargetXZLengthSquared - targetXSquared);
++    const double intersectionB = -intersectionA;
++
++    const auto solve = [&](double intersection) {
++        const double lng = angleToRotateBetweenVectors2D(
++            vecToTarget[0], vecToTarget[2], rotatedPixelVector[0], intersection);
++        const vec3 vecToTargetLng = rotateY(vecToTarget, -lng);
++        const double lat = angleToRotateBetweenVectors2D(
++            vecToTargetLng[1], vecToTargetLng[2], rotatedPixelVector[1], rotatedPixelVector[2]);
++        return std::pair<double, double>{lng, lat};
++    };
++    const auto [lngA, latA] = solve(intersectionA);
++    const auto [lngB, latB] = solve(intersectionB);
++
++    constexpr double limit = std::numbers::pi * 0.5;
++    const bool validA = latA >= -limit && latA <= limit;
++    const bool validB = latB >= -limit && latB <= limit;
++
++    double lng = 0;
++    double lat = 0;
++    if (validA && validB) {
++        const double centerLng = util::deg2rad(center.longitude());
++        const double centerLat = util::deg2rad(center.latitude());
++        const double distanceA = distanceOfAnglesRadians(lngA, centerLng) + distanceOfAnglesRadians(latA, centerLat);
++        const double distanceB = distanceOfAnglesRadians(lngB, centerLng) + distanceOfAnglesRadians(latB, centerLat);
++        std::tie(lng, lat) = distanceA < distanceB ? std::pair{lngA, latA} : std::pair{lngB, latB};
++    } else if (validA) {
++        std::tie(lng, lat) = std::pair{lngA, latA};
++    } else if (validB) {
++        std::tie(lng, lat) = std::pair{lngB, latB};
++    } else {
++        return std::nullopt;
++    }
++    return LatLng{std::clamp(util::rad2deg(lat), -90.0, 90.0), util::rad2deg(lng)};
++}
++
++double VerticalPerspectiveProjection::zoomAdjustment(double fromLatitude, double toLatitude) {
++    return std::log2(std::cos(util::deg2rad(toLatitude)) / std::cos(util::deg2rad(fromLatitude)));
++}
++
+ ProjectionData VerticalPerspectiveProjection::getProjectionData(const TransformState& state,
+                                                                 const UnwrappedTileID& tileID,
+                                                                 const mat4& mercatorMatrix) const {
+-    const double radius = globeRadiusPixels(Projection::worldSize(state.getScale()), state.getLatLng().latitude());
+     const double tileScale = static_cast<double>(1ull << tileID.canonical.z);
+-    return {.mainMatrix = globeViewProjectionMatrix(state, radius),
++    return {.mainMatrix = state.getGlobeViewProjectionMatrix(),
+             .tileMercatorCoords = {{tileID.canonical.x / tileScale,
+                                     tileID.canonical.y / tileScale,
+                                     1.0 / tileScale / util::EXTENT,
+                                     1.0 / tileScale / util::EXTENT}},
+-            .clippingPlane = clippingPlane(state, radius),
++            .clippingPlane = state.getGlobeClippingPlane(),
+             .projectionTransition = state.getProjectionTransition(),
+             .fallbackMatrix = mercatorMatrix,
+             .clipAntimeridian = tileID.canonical.z == 0};
+diff --git a/src/mln/map/vertical_perspective_projection.hpp b/src/mln/map/vertical_perspective_projection.hpp
+index d0ab0958c9210df4229e6e4b2bddc15aeec49930..be97ada86f48aeb01dcb89efbd72514c80ce5429 100644
+--- a/src/mln/map/vertical_perspective_projection.hpp
++++ b/src/mln/map/vertical_perspective_projection.hpp
+@@ -2,6 +2,8 @@
+ 
+ #include <mln/map/projection_base.hpp>
+ 
++#include <optional>
++
+ namespace mln {
+ 
+ /// The globe: tile geometry projected onto a unit sphere, viewed with a vertical perspective camera.
+@@ -28,6 +30,26 @@ public:
+ 
+     /// The plane (as ax + by + cz + d) that separates the visible hemisphere from the back of the globe.
+     static vec4 clippingPlane(const TransformState&, double globeRadiusPixels);
++
++    /// Camera position in unit-sphere space.
++    static vec3 cameraPosition(const TransformState&, double globeRadiusPixels);
++
++    static vec3 surfaceVector(const LatLng&);
++    static LatLng surfaceVectorToLatLng(const vec3&);
++
++    /// Unit-sphere point under a screen pixel (y up, as `TransformState` takes it); pixels off the globe snap to
++    /// the nearest point on the horizon.
++    static vec3 screenCoordinateToSurface(const TransformState&, const ScreenCoordinate&);
++    static LatLng screenCoordinateToLatLng(const TransformState&, const ScreenCoordinate&, LatLng::WrapMode);
++    static ScreenCoordinate latLngToScreenCoordinate(const TransformState&, const LatLng&, vec4& clip);
++
++    /// The center that puts `latLng` under `anchor` with the bearing unchanged, if one exists.
++    static std::optional<LatLng> centerForLocationAtPoint(const TransformState&,
++                                                          const LatLng& latLng,
++                                                          const ScreenCoordinate& anchor);
++
++    /// Zoom change that keeps the globe the same apparent size when the center moves between latitudes.
++    static double zoomAdjustment(double fromLatitude, double toLatitude);
+ };
+ 
+ } // namespace mln
+diff --git a/src/mln/renderer/render_layer.cpp b/src/mln/renderer/render_layer.cpp
+index da11335640a35d4ab8837649906d87cf960cfec8..d5dea22b763b0fd8d81752e020ea99e74aef7352 100644
+--- a/src/mln/renderer/render_layer.cpp
++++ b/src/mln/renderer/render_layer.cpp
+@@ -53,7 +53,8 @@ bool RenderLayer::needsRendering() const {
+ 
+ bool RenderLayer::supportsZoom(float zoom) const {
+     // TODO: shall we use rounding or epsilon comparisons?
+-    return baseImpl->minZoom <= zoom && baseImpl->maxZoom >= zoom;
++    // A minimum of 0 is "no minimum": the globe zooms below 0 toward the poles.
++    return baseImpl->minZoom <= std::max(zoom, 0.0f) && baseImpl->maxZoom >= zoom;
+ }
+ 
+ void RenderLayer::prepare(const LayerPrepareParameters& params) {
+diff --git a/src/mln/renderer/render_tile.cpp b/src/mln/renderer/render_tile.cpp
+index e1c7759c7ac149efa5c389b86f9a181d889f45bc..b88ef8610a4d3faa0cb4cf6e862f6fc658ae823c 100644
+--- a/src/mln/renderer/render_tile.cpp
++++ b/src/mln/renderer/render_tile.cpp
+@@ -136,7 +136,9 @@ void RenderTile::prepare(const SourcePrepareParameters& parameters) {
+     // precision
+     const auto& transform = parameters.transform;
+     matrix = transform.state.getProjectionData(id, transform.projMatrix).mainMatrix;
+-    nearClippedMatrix = transform.state.getProjectionData(id, transform.nearClippedProjMatrix).mainMatrix;
++    nearClippedMatrix = transform.state.isGlobeRendering()
++                            ? matrix
++                            : transform.state.getProjectionData(id, transform.nearClippedProjMatrix).mainMatrix;
+ }
+ 
+ void RenderTile::setFeatureState(const LayerFeatureStates& states) {
+diff --git a/src/mln/renderer/sources/render_image_source.cpp b/src/mln/renderer/sources/render_image_source.cpp
+index e5b570f4f5ba0a73569210702de3e6206a6d890d..de310647d4904f6c8289df0e153d6f2e4b0e7a76 100644
+--- a/src/mln/renderer/sources/render_image_source.cpp
++++ b/src/mln/renderer/sources/render_image_source.cpp
+@@ -148,7 +148,7 @@ void RenderImageSource::update(Immutable<style::Source::Impl> baseImpl_,
+                                        .tileLodScale = parameters.tileLodScale,
+                                        .tileLodPitchThreshold = parameters.tileLodPitchThreshold,
+                                        .tileLodMode = parameters.tileLodMode},
+-                                      static_cast<uint8_t>(transformState.getZoom()),
++                                      transformState.getIntegerZoom(),
+                                       zoomRange);
+     for (auto tile : idealTiles) {
+         for (auto coveringTile : tileCover) {
+diff --git a/src/mln/style/conversion/constant.cpp b/src/mln/style/conversion/constant.cpp
+index a0953fa7758728dafd59538f861a084fb1c0c256..2c93d60529fbb3c0cc81b01a5e132620d7aaa028 100644
+--- a/src/mln/style/conversion/constant.cpp
++++ b/src/mln/style/conversion/constant.cpp
+@@ -140,22 +140,21 @@ std::optional<std::vector<Color>> Converter<std::vector<Color>>::operator()(cons
+ 
+ std::optional<ProjectionDefinition> Converter<ProjectionDefinition>::operator()(const Convertible& value,
+                                                                                 Error& error) const {
+-    const auto isProjectionName = [](const std::string& name) {
+-        return name == "mercator" || name == "vertical-perspective" || name == "globe";
+-    };
+-    if (const std::optional<std::string> type = toString(value)) {
+-        if (isProjectionName(*type)) {
++    if (const std::optional<std::string> name = toString(value)) {
++        if (const auto type = projectionTypeFromName(*name)) {
+             return ProjectionDefinition(*type);
+         }
+         error.message = "projection type must be mercator, vertical-perspective or globe";
+         return std::nullopt;
+     }
+     if (isArray(value) && arrayLength(value) == 3) {
+-        const std::optional<std::string> from = toString(arrayMember(value, 0));
+-        const std::optional<std::string> to = toString(arrayMember(value, 1));
++        const std::optional<std::string> fromName = toString(arrayMember(value, 0));
++        const std::optional<std::string> toName = toString(arrayMember(value, 1));
+         const std::optional<double> transition = toDouble(arrayMember(value, 2));
+-        if (from && to && transition) {
+-            if (isProjectionName(*from) && isProjectionName(*to)) {
++        if (fromName && toName && transition) {
++            const auto from = projectionTypeFromName(*fromName);
++            const auto to = projectionTypeFromName(*toName);
++            if (from && to) {
+                 return ProjectionDefinition(*from, *to, *transition);
+             }
+             error.message = "projection type must be mercator, vertical-perspective or globe";
+diff --git a/src/mln/style/expression/coercion.cpp b/src/mln/style/expression/coercion.cpp
+index b1f116f368142f27acf7d2869839de17323138e5..04d9316c2211fbd93cb021bbf26c42dfbcdf15b3 100644
+--- a/src/mln/style/expression/coercion.cpp
++++ b/src/mln/style/expression/coercion.cpp
+@@ -76,12 +76,20 @@ EvaluationResult toColor(const Value& colorValue) {
+ EvaluationResult toProjectionDefinition(const Value& value) {
+     return value.match(
+         [](const ProjectionDefinition& projection) -> EvaluationResult { return projection; },
+-        [](const std::string& type) -> EvaluationResult { return ProjectionDefinition(type); },
++        [&](const std::string& name) -> EvaluationResult {
++            if (const auto type = projectionTypeFromName(name)) {
++                return ProjectionDefinition(*type);
++            }
++            return EvaluationError{"Could not parse projectionDefinition from value '" + stringify(value) + "'"};
++        },
+         [&](const std::vector<Value>& components) -> EvaluationResult {
+             if (components.size() == 3 && components[0].is<std::string>() && components[1].is<std::string>() &&
+                 components[2].is<double>()) {
+-                return ProjectionDefinition(
+-                    components[0].get<std::string>(), components[1].get<std::string>(), components[2].get<double>());
++                const auto from = projectionTypeFromName(components[0].get<std::string>());
++                const auto to = projectionTypeFromName(components[1].get<std::string>());
++                if (from && to) {
++                    return ProjectionDefinition(*from, *to, components[2].get<double>());
++                }
+             }
+             return EvaluationError{"Could not parse projectionDefinition from value '" + stringify(value) + "'"};
+         },
+diff --git a/src/mln/style/projection_definition.cpp b/src/mln/style/projection_definition.cpp
+index f5cc5ae9efacebedf0873879ef1aa90dfd53c8c7..77fb8ab51819ff3fbc98d34e8227df3f259b64b1 100644
+--- a/src/mln/style/projection_definition.cpp
++++ b/src/mln/style/projection_definition.cpp
+@@ -1,21 +1,64 @@
+ #include <mln/style/projection_definition.hpp>
+ 
++#include <cassert>
++
+ namespace mln {
+ 
+-ProjectionDefinition::ProjectionDefinition(std::string type)
++namespace {
++
++constexpr std::string_view mercatorName = "mercator";
++constexpr std::string_view verticalPerspectiveName = "vertical-perspective";
++constexpr std::string_view globeName = "globe";
++
++ProjectionType typeFromNameOrMercator(std::string_view name) {
++    const auto type = projectionTypeFromName(name);
++    assert(type);
++    return type.value_or(ProjectionType::Mercator);
++}
++
++} // namespace
++
++std::string_view projectionTypeName(ProjectionType type) {
++    switch (type) {
++        case ProjectionType::Mercator:
++            return mercatorName;
++        case ProjectionType::VerticalPerspective:
++            return verticalPerspectiveName;
++        case ProjectionType::Globe:
++            return globeName;
++    }
++    assert(false);
++    return mercatorName;
++}
++
++std::optional<ProjectionType> projectionTypeFromName(std::string_view name) {
++    if (name == mercatorName) return ProjectionType::Mercator;
++    if (name == verticalPerspectiveName) return ProjectionType::VerticalPerspective;
++    if (name == globeName) return ProjectionType::Globe;
++    return std::nullopt;
++}
++
++ProjectionDefinition::ProjectionDefinition(ProjectionType type)
+     : from(type),
+-      to(std::move(type)) {}
++      to(type) {}
+ 
+-ProjectionDefinition::ProjectionDefinition(std::string from_, std::string to_, double transition_)
+-    : from(std::move(from_)),
+-      to(std::move(to_)),
++ProjectionDefinition::ProjectionDefinition(ProjectionType from_, ProjectionType to_, double transition_)
++    : from(from_),
++      to(to_),
+       transition(transition_) {}
+ 
++ProjectionDefinition::ProjectionDefinition(std::string_view name)
++    : ProjectionDefinition(typeFromNameOrMercator(name)) {}
++
++ProjectionDefinition::ProjectionDefinition(std::string_view from_, std::string_view to_, double transition_)
++    : ProjectionDefinition(typeFromNameOrMercator(from_), typeFromNameOrMercator(to_), transition_) {}
++
+ mln::Value ProjectionDefinition::serialize() const {
+     if (from == to && transition == 1) {
+-        return from;
++        return std::string(projectionTypeName(from));
+     }
+-    return std::vector<mln::Value>{from, to, transition};
++    return std::vector<mln::Value>{
++        std::string(projectionTypeName(from)), std::string(projectionTypeName(to)), transition};
+ }
+ 
+ } // namespace mln
+diff --git a/test/map/transform.test.cpp b/test/map/transform.test.cpp
+index 932b3629a5f5b36856351148d333b3914fad32ca..3c831f4c6b5795927d5f041779a81be4ec40ad29 100644
+--- a/test/map/transform.test.cpp
++++ b/test/map/transform.test.cpp
+@@ -1383,10 +1383,19 @@ TEST(TransformState, ProjectionDataMercatorFields) {
+ 
+ TEST(Transform, ProjectionDefinition) {
+     Transform transform;
+-    ASSERT_EQ(ProjectionDefinition("mercator"), transform.getState().getProjectionDefinition());
++    ASSERT_FALSE(transform.getState().isGlobeRendering());
++    ASSERT_DOUBLE_EQ(0.0, transform.getState().getProjectionTransition());
+     transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective", "mercator", 0.5));
+-    ASSERT_EQ(ProjectionDefinition("vertical-perspective", "mercator", 0.5),
+-              transform.getState().getProjectionDefinition());
++    ASSERT_TRUE(transform.getState().isGlobeRendering());
++    ASSERT_DOUBLE_EQ(0.5, transform.getState().getProjectionTransition());
++    // The transition is how far the globe has gone, whichever way the definition reads.
++    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective", "mercator", 0.25));
++    ASSERT_DOUBLE_EQ(0.75, transform.getState().getProjectionTransition());
++    transform.setProjectionDefinition(ProjectionDefinition("mercator", "vertical-perspective", 0.25));
++    ASSERT_DOUBLE_EQ(0.25, transform.getState().getProjectionTransition());
++    transform.setProjectionDefinition(ProjectionDefinition("mercator"));
++    ASSERT_FALSE(transform.getState().isGlobeRendering());
++    ASSERT_DOUBLE_EQ(0.0, transform.getState().getProjectionTransition());
+ }
+ 
+ TEST(VerticalPerspectiveProjection, TileCoordinatesToSphere) {
+@@ -1405,21 +1414,27 @@ TEST(VerticalPerspectiveProjection, TileCoordinatesToSphere) {
+     EXPECT_LT(south[1], -0.99);
+ }
+ 
++namespace {
++
++void setUpGlobe(Transform& transform, const LatLng& center, double zoom, double bearing = 0, double pitch = 0) {
++    transform.resize({800, 600});
++    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective"));
++    transform.jumpTo(CameraOptions().withCenter(center).withZoom(zoom).withBearing(bearing).withPitch(pitch));
++}
++
++} // namespace
++
+ TEST(VerticalPerspectiveProjection, CenterProjectsToScreenCenter) {
+     Transform transform;
+-    transform.resize({512, 512});
+-    transform.jumpTo(CameraOptions().withCenter(LatLng{37.0, -122.0}).withZoom(3.0).withBearing(20.0).withPitch(30.0));
+-    transform.setProjectionDefinition(ProjectionDefinition("vertical-perspective"));
++    setUpGlobe(transform, {37.0, -122.0}, 3.0, 20.0, 30.0);
+     const TransformState& state = transform.getState();
+     ASSERT_TRUE(state.isGlobeRendering());
+ 
+     const double radius = VerticalPerspectiveProjection::globeRadiusPixels(Projection::worldSize(state.getScale()),
+                                                                            state.getLatLng().latitude());
+     const mat4 matrix = VerticalPerspectiveProjection::globeViewProjectionMatrix(state, radius);
+-    const LatLng center = state.getLatLng();
+-    const double lat = util::deg2rad(center.latitude());
+-    const double lng = util::deg2rad(center.longitude());
+-    const vec4 surface = {{std::sin(lng) * std::cos(lat), std::sin(lat), std::cos(lng) * std::cos(lat), 1}};
++    const vec3 center = VerticalPerspectiveProjection::surfaceVector(state.getLatLng());
++    const vec4 surface = {{center[0], center[1], center[2], 1}};
+     vec4 clip;
+     matrix::transformMat4(clip, surface, matrix);
+     EXPECT_NEAR(0.0, clip[0] / clip[3], 1e-6);
+@@ -1430,3 +1445,184 @@ TEST(VerticalPerspectiveProjection, CenterProjectsToScreenCenter) {
+     const vec4 antipode = {{-surface[0], -surface[1], -surface[2], 1}};
+     EXPECT_LT(plane[0] * antipode[0] + plane[1] * antipode[1] + plane[2] * antipode[2] + plane[3], 0.0);
+ }
++
++TEST(GlobeTransform, CachedViewStateFollowsTheCamera) {
++    Transform transform;
++    setUpGlobe(transform, {20.0, -40.0}, 2.5, 35.0, 25.0);
++    const TransformState& state = transform.getState();
++    const auto check = [&] {
++        const double radius = VerticalPerspectiveProjection::globeRadiusPixels(Projection::worldSize(state.getScale()),
++                                                                               state.getLatLng().latitude());
++        EXPECT_DOUBLE_EQ(radius, state.getGlobeRadiusPixels());
++        const mat4 expected = VerticalPerspectiveProjection::globeViewProjectionMatrix(state, radius);
++        const vec4 plane = VerticalPerspectiveProjection::clippingPlane(state, radius);
++        const vec3 camera = VerticalPerspectiveProjection::cameraPosition(state, radius);
++        for (std::size_t i = 0; i < 16; ++i) {
++            EXPECT_DOUBLE_EQ(expected[i], state.getGlobeViewProjectionMatrix()[i]) << "element " << i;
++        }
++        for (std::size_t i = 0; i < 4; ++i) {
++            EXPECT_DOUBLE_EQ(plane[i], state.getGlobeClippingPlane()[i]) << "plane " << i;
++        }
++        for (std::size_t i = 0; i < 3; ++i) {
++            EXPECT_DOUBLE_EQ(camera[i], state.getGlobeCameraPosition()[i]) << "camera " << i;
++        }
++        mat4 roundTrip;
++        matrix::multiply(roundTrip, state.getGlobeViewProjectionMatrix(), state.getInverseGlobeViewProjectionMatrix());
++        for (std::size_t i = 0; i < 16; ++i) {
++            EXPECT_NEAR(i % 5 == 0 ? 1.0 : 0.0, roundTrip[i], 1e-9) << "inverse element " << i;
++        }
++    };
++    check();
++    transform.jumpTo(CameraOptions().withCenter(LatLng{-30.0, 100.0}).withZoom(4.0).withPitch(50.0).withBearing(-80.0));
++    check();
++    transform.resize({1024, 300});
++    check();
++}
++
++TEST(GlobeTransform, UnprojectRoundTrip) {
++    Transform transform;
++    setUpGlobe(transform, {20.0, -40.0}, 2.5, 35.0, 25.0);
++    for (const ScreenCoordinate& point :
++         {ScreenCoordinate{400, 300}, ScreenCoordinate{300, 200}, ScreenCoordinate{500, 420}}) {
++        const LatLng latLng = transform.screenCoordinateToLatLng(point);
++        const ScreenCoordinate back = transform.latLngToScreenCoordinate(latLng);
++        EXPECT_NEAR(point.x, back.x, 1e-6);
++        EXPECT_NEAR(point.y, back.y, 1e-6);
++    }
++    const LatLng center = transform.screenCoordinateToLatLng({400, 300});
++    EXPECT_NEAR(20.0, center.latitude(), 1e-9);
++    EXPECT_NEAR(-40.0, center.longitude(), 1e-9);
++}
++
++TEST(GlobeTransform, OffGlobePixelsSnapToTheHorizon) {
++    Transform transform;
++    setUpGlobe(transform, {0.0, 0.0}, 0.5);
++    // Zoom 0.5 shows the whole globe with room around it; a corner pixel is off the planet.
++    const LatLng corner = transform.screenCoordinateToLatLng({0, 0});
++    EXPECT_LT(corner.latitude(), 90.0);
++    EXPECT_GT(corner.latitude(), 0.0);
++    EXPECT_LT(corner.longitude(), 0.0);
++    // The snap lands on the horizon: from a camera `d` radii out, that circle is acos(1 / d) from the center.
++    const vec3& camera = transform.getState().getGlobeCameraPosition();
++    const double horizon = std::acos(1.0 / std::hypot(camera[0], camera[1], camera[2]));
++    const double angle = std::acos(std::cos(util::deg2rad(corner.latitude())) *
++                                   std::cos(util::deg2rad(corner.longitude())));
++    EXPECT_NEAR(horizon, angle, 1e-6);
++}
++
++TEST(GlobeTransform, MoveByPutsTheDraggedPointAtTheCenter) {
++    Transform transform;
++    setUpGlobe(transform, {10.0, 20.0}, 3.0);
++    for (int i = 0; i < 8; i++) {
++        const ScreenCoordinate offset{i % 2 ? 60.0 : -45.0, i % 3 ? 30.0 : -50.0};
++        const LatLng expected = transform.screenCoordinateToLatLng({400 - offset.x, 300 - offset.y});
++        const double zoomBefore = transform.getZoom();
++        const double latitudeBefore = transform.getLatLng().latitude();
++        transform.moveBy(offset);
++        EXPECT_NEAR(expected.latitude(), transform.getLatLng().latitude(), 1e-6);
++        EXPECT_NEAR(expected.longitude(), transform.getLatLng().longitude(), 1e-6);
++        // The planet keeps its apparent size: zoom follows the latitude.
++        EXPECT_NEAR(zoomBefore + VerticalPerspectiveProjection::zoomAdjustment(latitudeBefore, expected.latitude()),
++                    transform.getZoom(),
++                    1e-6);
++    }
++}
++
++TEST(GlobeTransform, AnchoredZoomKeepsTheAnchorInPlace) {
++    Transform transform;
++    setUpGlobe(transform, {30.0, 15.0}, 3.0);
++    const ScreenCoordinate anchor{250, 180};
++    const LatLng anchorLatLng = transform.screenCoordinateToLatLng(anchor);
++    transform.jumpTo(CameraOptions().withZoom(4.5).withAnchor(anchor));
++    EXPECT_NE(30.0, transform.getLatLng().latitude());
++    const ScreenCoordinate after = transform.latLngToScreenCoordinate(anchorLatLng);
++    EXPECT_NEAR(anchor.x, after.x, 0.5);
++    EXPECT_NEAR(anchor.y, after.y, 0.5);
++}
++
++TEST(GlobeTransform, PolesAreReachableAndZoomFollowsLatitude) {
++    Transform transform;
++    setUpGlobe(transform, {0.0, 0.0}, 0.0);
++    const double radiusAtEquator = transform.getState().getGlobeRadiusPixels();
++    transform.jumpTo(CameraOptions().withCenter(LatLng{80.0, 0.0}));
++    EXPECT_NEAR(80.0, transform.getLatLng().latitude(), 1e-9);
++    // Moving the center towards the pole lowers the zoom by log2(cos 80), below the map's minimum zoom of 0, so the
++    // planet keeps its size on screen.
++    EXPECT_NEAR(VerticalPerspectiveProjection::zoomAdjustment(0.0, 80.0), transform.getZoom(), 1e-9);
++    EXPECT_NEAR(radiusAtEquator, transform.getState().getGlobeRadiusPixels(), 1e-6);
++    transform.jumpTo(CameraOptions().withCenter(LatLng{80.0, 0.0}).withZoom(3.0));
++    transform.jumpTo(CameraOptions().withCenter(LatLng{0.0, 0.0}));
++    EXPECT_NEAR(3.0 + VerticalPerspectiveProjection::zoomAdjustment(80.0, 0.0), transform.getZoom(), 1e-9);
++
++    // Past the Mercator limit the center clamps, and the zoom follows the clamped center: the planet keeps its size.
++    const double radiusBefore = transform.getState().getGlobeRadiusPixels();
++    transform.jumpTo(CameraOptions().withCenter(LatLng{89.0, 0.0}));
++    EXPECT_NEAR(util::LATITUDE_MAX, transform.getLatLng().latitude(), 1e-6);
++    EXPECT_NEAR(radiusBefore, transform.getState().getGlobeRadiusPixels(), 1e-6);
++    transform.moveBy({0.0, 300.0});
++    EXPECT_NEAR(util::LATITUDE_MAX, transform.getLatLng().latitude(), 1e-6);
++    EXPECT_NEAR(radiusBefore, transform.getState().getGlobeRadiusPixels(), 1e-6);
++}
++
++TEST(GlobeTransform, BoundsKeepTheCenterInside) {
++    // GL JS ignores `maxBounds` on the globe (its TODO); native keeps honoring them, in every constrain mode.
++    const LatLngBounds bounds = LatLngBounds::hull({40.0, -10.0}, {70.0, 40.0});
++    for (const auto mode : {ConstrainMode::HeightOnly, ConstrainMode::WidthAndHeight, ConstrainMode::Screen}) {
++        Transform transform;
++        setUpGlobe(transform, {56.0, 11.0}, 4.0);
++        transform.setConstrainMode(mode);
++        transform.setLatLngBounds(bounds);
++        EXPECT_NEAR(56.0, transform.getLatLng().latitude(), 1e-9);
++        EXPECT_NEAR(11.0, transform.getLatLng().longitude(), 1e-9);
++        for (const LatLng& outside :
++             {LatLng{56.0, -65.0}, LatLng{80.0, 11.0}, LatLng{56.0, 50.0}, LatLng{30.0, 11.0}}) {
++            transform.jumpTo(CameraOptions().withCenter(outside).withZoom(4.0));
++            EXPECT_TRUE(bounds.contains(transform.getLatLng()))
++                << transform.getLatLng().latitude() << ", " << transform.getLatLng().longitude();
++        }
++        // A center the whole screen fits around stays where it was asked for.
++        transform.jumpTo(CameraOptions().withCenter(LatLng{55.0, 15.0}).withZoom(4.0));
++        EXPECT_NEAR(55.0, transform.getLatLng().latitude(), 1e-9);
++        EXPECT_NEAR(15.0, transform.getLatLng().longitude(), 1e-9);
++        if (mode == ConstrainMode::Screen) {
++            // The screen has to fit inside the bounds, so zooming out is stopped short.
++            transform.jumpTo(CameraOptions().withCenter(LatLng{56.0, 11.0}).withZoom(1.0));
++            EXPECT_GT(transform.getZoom(), 1.0);
++            EXPECT_TRUE(bounds.contains(transform.getLatLng()));
++        }
++    }
++}
++
++TEST(GlobeTransform, MinZoomFollowsLatitude) {
++    Transform transform;
++    setUpGlobe(transform, {0.0, 0.0}, 2.0);
++    const TransformState& state = transform.getState();
++    EXPECT_DOUBLE_EQ(0.0, state.getMinZoom());
++    EXPECT_DOUBLE_EQ(0.0, state.getMinZoomAtLatitude(0.0));
++    EXPECT_NEAR(-1.0, state.getMinZoomAtLatitude(60.0), 1e-12);
++    EXPECT_NEAR(std::log2(std::cos(util::deg2rad(80.0))), state.getMinZoomAtLatitude(80.0), 1e-12);
++
++    // Zoom requests clamp to the floor at the requested center, not at the equator's.
++    transform.jumpTo(CameraOptions().withCenter(LatLng{80.0, 0.0}).withZoom(-5.0));
++    EXPECT_NEAR(state.getMinZoomAtLatitude(80.0), transform.getZoom(), 1e-9);
++    transform.jumpTo(CameraOptions().withCenter(LatLng{0.0, 0.0}).withZoom(-1.0));
++    EXPECT_DOUBLE_EQ(0.0, transform.getZoom());
++    EXPECT_EQ(0, state.getIntegerZoom());
++
++    // Integer zoom never wraps below zero.
++    transform.jumpTo(CameraOptions().withCenter(LatLng{80.0, 0.0}).withZoom(-2.0));
++    EXPECT_NEAR(-2.0, transform.getZoom(), 1e-9);
++    EXPECT_EQ(0, state.getIntegerZoom());
++
++    // Mercator keeps the plain minimum.
++    transform.setProjectionDefinition(ProjectionDefinition("mercator"));
++    EXPECT_DOUBLE_EQ(state.getMinZoom(), state.getMinZoomAtLatitude(80.0));
++    transform.jumpTo(CameraOptions().withCenter(LatLng{80.0, 0.0}).withZoom(-2.0));
++    EXPECT_GE(transform.getZoom(), 0.0);
++}
++
++TEST(GlobeTransform, ZoomAdjustment) {
++    EXPECT_DOUBLE_EQ(0.0, VerticalPerspectiveProjection::zoomAdjustment(20.0, 20.0));
++    EXPECT_NEAR(-1.0, VerticalPerspectiveProjection::zoomAdjustment(0.0, 60.0), 1e-12);
++    EXPECT_NEAR(1.0, VerticalPerspectiveProjection::zoomAdjustment(60.0, 0.0), 1e-12);
++}

@@ -3,5 +3,19 @@
 # Maintained by airdress/scripts/refresh.sh and import-globe.sh; see
 # airdress/README.md.
 base ios-v7.0.0
+globe-pr maplibre/maplibre-native#4533 bec8a12440d0c8a3bd320f151e1b16de39285705
 infra/0001-fork-ci.patch
 infra/0002-packaging.patch
+globe/01-projection-seam.patch
+globe/02-project-tile-prelude.patch
+globe/03-projection-style-property.patch
+globe/04-fill-background-metal.patch
+globe/05-subdivision-pole-caps.patch
+globe/06-camera.patch
+globe/07-tile-cover.patch
+globe/08-symbols.patch
+globe/09-lines-metal.patch
+globe/10-opengl.patch
+globe/11-lines-metal-2.patch
+globe/12-glfw-toggle.patch
+globe/13-fixes-and-tests.patch

@@ -1,0 +1,5460 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Carmack <johncarmack@me.com>
+Date: Thu, 27 Aug 2026 00:03:23 +0000
+Subject: [PATCH] Globe 12/13, phase 11: the GLFW app toggles the globe
+
+Imported from maplibre/maplibre-native#4533 at bec8a12440d0c8a3bd320f151e1b16de39285705,
+first-parent commits 796a808099..6c35be0a2c (3).
+---
+ .../globe/debug-tile-borders/expected.png     |  Bin 0 -> 16080 bytes
+ .../globe/fill-planet-pole/expected.png       |  Bin 0 -> 23519 bytes
+ .../globe/fill-planet-tiles/expected.png      |  Bin 0 -> 15492 bytes
+ metrics/ignores/platform-android-vulkan.json  |   29 +-
+ .../src/main/AndroidManifest.xml              |   12 +
+ .../src/main/assets/globe.json                | 2068 +++++++++++++++++
+ .../testapp/activity/style/GlobeActivity.kt   |   67 +
+ .../src/main/res/values/descriptions.xml      |    1 +
+ .../src/main/res/values/titles.xml            |    1 +
+ platform/glfw/glfw_view.cpp                   |   12 +
+ platform/ios/BUILD.bazel                      |    1 +
+ platform/ios/app/MBXViewController.mm         |    7 +
+ platform/ios/app/globe.json                   | 2068 +++++++++++++++++
+ 13 files changed, 4238 insertions(+), 28 deletions(-)
+ create mode 100644 metrics/expectations/platform-ios-metal/render-tests/projection/globe/debug-tile-borders/expected.png
+ create mode 100644 metrics/expectations/platform-ios-metal/render-tests/projection/globe/fill-planet-pole/expected.png
+ create mode 100644 metrics/expectations/platform-ios-metal/render-tests/projection/globe/fill-planet-tiles/expected.png
+ create mode 100644 platform/android/MapLibreAndroidTestApp/src/main/assets/globe.json
+ create mode 100644 platform/android/MapLibreAndroidTestApp/src/main/java/org/maplibre/android/testapp/activity/style/GlobeActivity.kt
+ create mode 100644 platform/ios/app/globe.json
+
+diff --git a/metrics/expectations/platform-ios-metal/render-tests/projection/globe/debug-tile-borders/expected.png b/metrics/expectations/platform-ios-metal/render-tests/projection/globe/debug-tile-borders/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..1201f1f1090e57163760f7c56c0966b24fa44d13
+GIT binary patch
+literal 16080
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/expectations/platform-ios-metal/render-tests/projection/globe/fill-planet-pole/expected.png b/metrics/expectations/platform-ios-metal/render-tests/projection/globe/fill-planet-pole/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..035490b23ee7eb4e495ac9b4692e9df3295d018f
+GIT binary patch
+literal 23519
+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
+V!fu8;=H`VZEj3-$LgnXy{|8sOi^Bi_
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/expectations/platform-ios-metal/render-tests/projection/globe/fill-planet-tiles/expected.png b/metrics/expectations/platform-ios-metal/render-tests/projection/globe/fill-planet-tiles/expected.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f0f3c89bade3ea5bb877a1ecf92fbad9e6e1357
+GIT binary patch
+literal 15492
+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
+Y-kOW7JR6qXzq&43SesXvUcdkU0Y*l{KmY&$
+
+literal 0
+HcmV?d00001
+
+diff --git a/metrics/ignores/platform-android-vulkan.json b/metrics/ignores/platform-android-vulkan.json
+index ffb46de00260641cde140566c073c0f64390a200..c230c1b91ebc62ec302193665cec73509df0342f 100644
+--- a/metrics/ignores/platform-android-vulkan.json
++++ b/metrics/ignores/platform-android-vulkan.json
+@@ -1,31 +1,4 @@
+ {
+   "render-tests/fill-extrusion-color/function": "Layer Z Fighting: https://github.com/maplibre/maplibre-native/issues/1847",
+-  "render-tests/combinations/fill-opaque--image-translucent": "investigate",
+-  "render-tests/projection/globe/fill-grid": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-grid-pitched": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/background": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-planet-solid": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-planet-tiles": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/minzoom-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-planet-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/line-spiral": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/line-dasharray": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/text-line-equator": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/line-width-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-pitch-alignment/map-scale-map": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-pitch-alignment/map-scale-viewport": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-pitch-alignment/viewport-scale-map": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-pitch-alignment/viewport-scale-viewport": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/circle-planet": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/heatmap": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/text-point-pole-to-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/text-pitched-rotated": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/icon-text-translate-map": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/icon-text-translate-viewport": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/hillshade": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/raster-planet": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/raster-pole": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/raster-warped": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/fill-extrusion": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525",
+-  "render-tests/projection/globe/zoom-transition": "globe expectations pending a run on this platform's CI; https://github.com/maplibre/maplibre-native/pull/4525"
++  "render-tests/combinations/fill-opaque--image-translucent": "investigate"
+ }
+diff --git a/platform/android/MapLibreAndroidTestApp/src/main/AndroidManifest.xml b/platform/android/MapLibreAndroidTestApp/src/main/AndroidManifest.xml
+index ca2a1e6504646374d13dc5c4d5781ed18c9a9b04..709cc128ea10557809f8b89089c76a6337dbd185 100644
+--- a/platform/android/MapLibreAndroidTestApp/src/main/AndroidManifest.xml
++++ b/platform/android/MapLibreAndroidTestApp/src/main/AndroidManifest.xml
+@@ -773,6 +773,18 @@
+                 android:name="android.support.PARENT_ACTIVITY"
+                 android:value=".activity.FeatureOverviewActivity" />
+         </activity>
++        <activity
++            android:name=".activity.style.GlobeActivity"
++            android:description="@string/description_globe"
++            android:exported="true"
++            android:label="@string/activity_globe">
++            <meta-data
++                android:name="@string/category"
++                android:value="@string/category_style" />
++            <meta-data
++                android:name="android.support.PARENT_ACTIVITY"
++                android:value=".activity.FeatureOverviewActivity" />
++        </activity>
+         <activity
+             android:name=".activity.style.NoStyleActivity"
+             android:description="@string/description_no_style"
+diff --git a/platform/android/MapLibreAndroidTestApp/src/main/assets/globe.json b/platform/android/MapLibreAndroidTestApp/src/main/assets/globe.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..62e4b108d94080688e69b6291597e2f9196ca7ff
+--- /dev/null
++++ b/platform/android/MapLibreAndroidTestApp/src/main/assets/globe.json
+@@ -0,0 +1,2068 @@
++{
++  "name": "MapLibre Demo Tiles (globe)",
++  "zoom": 1.2,
++  "pitch": 0,
++  "center": [
++    10,
++    25
++  ],
++  "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
++  "layers": [
++    {
++      "id": "background",
++      "type": "background",
++      "paint": {
++        "background-color": "#D8F2FF"
++      },
++      "filter": [
++        "all"
++      ],
++      "layout": {
++        "visibility": "visible"
++      },
++      "maxzoom": 24
++    },
++    {
++      "id": "coastline",
++      "type": "line",
++      "paint": {
++        "line-blur": 0.5,
++        "line-color": "#198EC8",
++        "line-width": {
++          "stops": [
++            [
++              0,
++              2
++            ],
++            [
++              6,
++              6
++            ],
++            [
++              14,
++              9
++            ],
++            [
++              22,
++              18
++            ]
++          ]
++        }
++      },
++      "filter": [
++        "all"
++      ],
++      "layout": {
++        "line-cap": "round",
++        "line-join": "round",
++        "visibility": "visible"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "minzoom": 0,
++      "source-layer": "countries"
++    },
++    {
++      "id": "countries-fill",
++      "type": "fill",
++      "paint": {
++        "fill-color": [
++          "match",
++          [
++            "get",
++            "ADM0_A3"
++          ],
++          [
++            "ARM",
++            "ATG",
++            "AUS",
++            "BTN",
++            "CAN",
++            "COG",
++            "CZE",
++            "GHA",
++            "GIN",
++            "HTI",
++            "ISL",
++            "JOR",
++            "KHM",
++            "KOR",
++            "LVA",
++            "MLT",
++            "MNE",
++            "MOZ",
++            "PER",
++            "SAH",
++            "SGP",
++            "SLV",
++            "SOM",
++            "TJK",
++            "TUV",
++            "UKR",
++            "WSM"
++          ],
++          "#D6C7FF",
++          [
++            "AZE",
++            "BGD",
++            "CHL",
++            "CMR",
++            "CSI",
++            "DEU",
++            "DJI",
++            "GUY",
++            "HUN",
++            "IOA",
++            "JAM",
++            "LBN",
++            "LBY",
++            "LSO",
++            "MDG",
++            "MKD",
++            "MNG",
++            "MRT",
++            "NIU",
++            "NZL",
++            "PCN",
++            "PYF",
++            "SAU",
++            "SHN",
++            "STP",
++            "TTO",
++            "UGA",
++            "UZB",
++            "ZMB"
++          ],
++          "#EBCA8A",
++          [
++            "AGO",
++            "ASM",
++            "ATF",
++            "BDI",
++            "BFA",
++            "BGR",
++            "BLZ",
++            "BRA",
++            "CHN",
++            "CRI",
++            "ESP",
++            "HKG",
++            "HRV",
++            "IDN",
++            "IRN",
++            "ISR",
++            "KNA",
++            "LBR",
++            "LCA",
++            "MAC",
++            "MUS",
++            "NOR",
++            "PLW",
++            "POL",
++            "PRI",
++            "SDN",
++            "TUN",
++            "UMI",
++            "USA",
++            "USG",
++            "VIR",
++            "VUT"
++          ],
++          "#C1E599",
++          [
++            "ARE",
++            "ARG",
++            "BHS",
++            "CIV",
++            "CLP",
++            "DMA",
++            "ETH",
++            "GAB",
++            "GRD",
++            "HMD",
++            "IND",
++            "IOT",
++            "IRL",
++            "IRQ",
++            "ITA",
++            "KOS",
++            "LUX",
++            "MEX",
++            "NAM",
++            "NER",
++            "PHL",
++            "PRT",
++            "RUS",
++            "SEN",
++            "SUR",
++            "TZA",
++            "VAT"
++          ],
++          "#E7E58F",
++          [
++            "AUT",
++            "BEL",
++            "BHR",
++            "BMU",
++            "BRB",
++            "CYN",
++            "DZA",
++            "EST",
++            "FLK",
++            "GMB",
++            "GUM",
++            "HND",
++            "JEY",
++            "KGZ",
++            "LIE",
++            "MAF",
++            "MDA",
++            "NGA",
++            "NRU",
++            "SLB",
++            "SOL",
++            "SRB",
++            "SWZ",
++            "THA",
++            "TUR",
++            "VEN",
++            "VGB"
++          ],
++          "#98DDA1",
++          [
++            "AIA",
++            "BIH",
++            "BLM",
++            "BRN",
++            "CAF",
++            "CHE",
++            "COM",
++            "CPV",
++            "CUB",
++            "ECU",
++            "ESB",
++            "FSM",
++            "GAZ",
++            "GBR",
++            "GEO",
++            "KEN",
++            "LTU",
++            "MAR",
++            "MCO",
++            "MDV",
++            "NFK",
++            "NPL",
++            "PNG",
++            "PRY",
++            "QAT",
++            "SLE",
++            "SPM",
++            "SYC",
++            "TCA",
++            "TKM",
++            "TLS",
++            "VNM",
++            "WEB",
++            "WSB",
++            "YEM",
++            "ZWE"
++          ],
++          "#83D5F4",
++          [
++            "ABW",
++            "ALB",
++            "AND",
++            "ATC",
++            "BOL",
++            "COD",
++            "CUW",
++            "CYM",
++            "CYP",
++            "EGY",
++            "FJI",
++            "GGY",
++            "IMN",
++            "KAB",
++            "KAZ",
++            "KWT",
++            "LAO",
++            "MLI",
++            "MNP",
++            "MSR",
++            "MYS",
++            "NIC",
++            "NLD",
++            "PAK",
++            "PAN",
++            "PRK",
++            "ROU",
++            "SGS",
++            "SVN",
++            "SWE",
++            "TGO",
++            "TWN",
++            "VCT",
++            "ZAF"
++          ],
++          "#B1BBF9",
++          [
++            "ATA",
++            "GRL"
++          ],
++          "#FFFFFF",
++          "#EAB38F"
++        ]
++      },
++      "filter": [
++        "all"
++      ],
++      "layout": {
++        "visibility": "visible"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "source-layer": "countries"
++    },
++    {
++      "id": "countries-boundary",
++      "type": "line",
++      "paint": {
++        "line-color": "rgba(255, 255, 255, 1)",
++        "line-width": {
++          "stops": [
++            [
++              1,
++              1
++            ],
++            [
++              6,
++              2
++            ],
++            [
++              14,
++              6
++            ],
++            [
++              22,
++              12
++            ]
++          ]
++        },
++        "line-opacity": {
++          "stops": [
++            [
++              3,
++              0.5
++            ],
++            [
++              6,
++              1
++            ]
++          ]
++        }
++      },
++      "layout": {
++        "line-cap": "round",
++        "line-join": "round",
++        "visibility": "visible"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "source-layer": "countries"
++    },
++    {
++      "id": "geolines",
++      "type": "line",
++      "paint": {
++        "line-color": "#1077B0",
++        "line-opacity": 1,
++        "line-dasharray": [
++          3,
++          3
++        ]
++      },
++      "filter": [
++        "all",
++        [
++          "!=",
++          "name",
++          "International Date Line"
++        ]
++      ],
++      "layout": {
++        "visibility": "visible"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "source-layer": "geolines"
++    },
++    {
++      "id": "geolines-label",
++      "type": "symbol",
++      "paint": {
++        "text-color": "#1077B0",
++        "text-halo-blur": 1,
++        "text-halo-color": "rgba(255, 255, 255, 1)",
++        "text-halo-width": 1
++      },
++      "filter": [
++        "all",
++        [
++          "!=",
++          "name",
++          "International Date Line"
++        ]
++      ],
++      "layout": {
++        "text-font": [
++          "Open Sans Semibold"
++        ],
++        "text-size": {
++          "stops": [
++            [
++              2,
++              12
++            ],
++            [
++              6,
++              16
++            ]
++          ]
++        },
++        "text-field": "{name}",
++        "visibility": "visible",
++        "symbol-placement": "line"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "minzoom": 1,
++      "source-layer": "geolines"
++    },
++    {
++      "id": "countries-label",
++      "type": "symbol",
++      "paint": {
++        "text-color": "rgba(8, 37, 77, 1)",
++        "text-halo-blur": {
++          "stops": [
++            [
++              2,
++              0.2
++            ],
++            [
++              6,
++              0
++            ]
++          ]
++        },
++        "text-halo-color": "rgba(255, 255, 255, 1)",
++        "text-halo-width": {
++          "stops": [
++            [
++              2,
++              1
++            ],
++            [
++              6,
++              1.6
++            ]
++          ]
++        }
++      },
++      "filter": [
++        "all"
++      ],
++      "layout": {
++        "text-font": [
++          "Open Sans Semibold"
++        ],
++        "text-size": {
++          "stops": [
++            [
++              2,
++              10
++            ],
++            [
++              4,
++              12
++            ],
++            [
++              6,
++              16
++            ]
++          ]
++        },
++        "text-field": {
++          "stops": [
++            [
++              2,
++              "{ABBREV}"
++            ],
++            [
++              4,
++              "{NAME}"
++            ]
++          ]
++        },
++        "visibility": "visible",
++        "text-max-width": 10,
++        "text-transform": {
++          "stops": [
++            [
++              0,
++              "uppercase"
++            ],
++            [
++              2,
++              "none"
++            ]
++          ]
++        }
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "minzoom": 2,
++      "source-layer": "centroids"
++    },
++    {
++      "id": "crimea-fill",
++      "type": "fill",
++      "source": "crimea",
++      "paint": {
++        "fill-color": "#D6C7FF"
++      }
++    }
++  ],
++  "bearing": 0,
++  "sources": {
++    "maplibre": {
++      "url": "https://demotiles.maplibre.org/tiles/tiles.json",
++      "type": "vector"
++    },
++    "crimea": {
++      "type": "geojson",
++      "data": {
++        "type": "Feature",
++        "geometry": {
++          "type": "Polygon",
++          "coordinates": [
++            [
++              [
++                34.00905273547181,
++                46.55925987559425
++              ],
++              [
++                33.64325260204026,
++                46.34533545368038
++              ],
++              [
++                33.628682598560204,
++                46.12569762665683
++              ],
++              [
++                33.64292861730951,
++                46.10476396128129
++              ],
++              [
++                33.648473474905984,
++                46.09033047763651
++              ],
++              [
++                33.63876482059936,
++                46.077976784785335
++              ],
++              [
++                33.62782672238245,
++                46.06747935719011
++              ],
++              [
++                33.62911357645072,
++                46.05708111413949
++              ],
++              [
++                33.642686868727424,
++                46.02192963417187
++              ],
++              [
++                33.6429723910654,
++                46.01521185644708
++              ],
++              [
++                33.636224138774026,
++                46.006705833212465
++              ],
++              [
++                33.63052626465907,
++                45.99692992186792
++              ],
++              [
++                33.63193836679693,
++                45.988472992911284
++              ],
++              [
++                33.64276684834442,
++                45.984575360297384
++              ],
++              [
++                33.646928693041986,
++                45.97981936210982
++              ],
++              [
++                33.638745893564305,
++                45.96829769147004
++              ],
++              [
++                33.61958133326394,
++                45.951176418494185
++              ],
++              [
++                33.63181380398527,
++                45.9445404758078
++              ],
++              [
++                33.638921676216,
++                45.94737012930554
++              ],
++              [
++                33.64561542516918,
++                45.95403251372139
++              ],
++              [
++                33.65666403976448,
++                45.95687114427736
++              ],
++              [
++                33.6825817382811,
++                45.95878100879199
++              ],
++              [
++                33.738791807037614,
++                45.94836945227263
++              ],
++              [
++                33.758180142697,
++                45.94072970008301
++              ],
++              [
++                33.77735917288169,
++                45.92923970233858
++              ],
++              [
++                33.75927796793485,
++                45.92241179584471
++              ],
++              [
++                33.72529865009221,
++                45.91587363154565
++              ],
++              [
++                33.70875012326826,
++                45.91008760988058
++              ],
++              [
++                33.69378857293381,
++                45.91480850795665
++              ],
++              [
++                33.69092650243843,
++                45.89657370898402
++              ],
++              [
++                33.693592356906805,
++                45.87271465766318
++              ],
++              [
++                33.69226765972388,
++                45.86041392418218
++              ],
++              [
++                33.6704813511748,
++                45.8584273836251
++              ],
++              [
++                33.65936345808916,
++                45.85944682601249
++              ],
++              [
++                33.653870582376726,
++                45.86425922279372
++              ],
++              [
++                33.65107345584843,
++                45.87089907254003
++              ],
++              [
++                33.63067378180233,
++                45.88040685247182
++              ],
++              [
++                33.61945300059696,
++                45.88147266102649
++              ],
++              [
++                33.60987421595539,
++                45.88048951126686
++              ],
++              [
++                33.59906957603934,
++                45.877610457390375
++              ],
++              [
++                33.57828877687868,
++                45.86810261756233
++              ],
++              [
++                33.55357394560386,
++                45.84700625141778
++              ],
++              [
++                33.530220674480375,
++                45.84221983655459
++              ],
++              [
++                33.5192297395441,
++                45.84121682367507
++              ],
++              [
++                33.50832088442496,
++                45.84313067048083
++              ],
++              [
++                33.48901101848409,
++                45.85268298292175
++              ],
++              [
++                33.482152996405716,
++                45.854578171799005
++              ],
++              [
++                33.46719955896293,
++                45.849912739405056
++              ],
++              [
++                33.42447496599681,
++                45.83075886348303
++              ],
++              [
++                33.40940172404095,
++                45.82691953557702
++              ],
++              [
++                33.37918350072067,
++                45.802867525073566
++              ],
++              [
++                33.37362145339398,
++                45.79619281922518
++              ],
++              [
++                33.33805543634864,
++                45.78577808972071
++              ],
++              [
++                33.26498872665803,
++                45.75410774187094
++              ],
++              [
++                33.22887541283427,
++                45.75131270772724
++              ],
++              [
++                33.19548267281132,
++                45.7644887297206
++              ],
++              [
++                33.1789202379222,
++                45.78010311364778
++              ],
++              [
++                33.1688456078636,
++                45.78470227904205
++              ],
++              [
++                33.161012432811674,
++                45.77921593899549
++              ],
++              [
++                33.15951585299757,
++                45.76864464913777
++              ],
++              [
++                33.165962301438725,
++                45.762685940125465
++              ],
++              [
++                33.1750888126426,
++                45.759218220695715
++              ],
++              [
++                33.181464829753,
++                45.75490447884948
++              ],
++              [
++                33.17613930782352,
++                45.7437961960276
++              ],
++              [
++                33.16369168844906,
++                45.735912015025065
++              ],
++              [
++                32.93692665480876,
++                45.662114646778264
++              ],
++              [
++                32.86839112407645,
++                45.63044340698664
++              ],
++              [
++                32.83803944575723,
++                45.60834075026611
++              ],
++              [
++                32.82702772424804,
++                45.59576101516498
++              ],
++              [
++                32.82433467080986,
++                45.58705137380335
++              ],
++              [
++                32.82563941622885,
++                45.579605763895614
++              ],
++              [
++                32.82993674258438,
++                45.56978311819469
++              ],
++              [
++                32.82851940940563,
++                45.56227808675749
++              ],
++              [
++                32.813310142795274,
++                45.55930933158257
++              ],
++              [
++                32.80213583657516,
++                45.560145780074464
++              ],
++              [
++                32.78258622159436,
++                45.565158335073846
++              ],
++              [
++                32.77333922465823,
++                45.56689313356526
++              ],
++              [
++                32.758306734735356,
++                45.565030173463356
++              ],
++              [
++                32.750177256846115,
++                45.55943726334968
++              ],
++              [
++                32.74340732630185,
++                45.55261895849793
++              ],
++              [
++                32.73524549539499,
++                45.54598788110354
++              ],
++              [
++                32.72031700779701,
++                45.53735927760957
++              ],
++              [
++                32.70536040418847,
++                45.53169142131733
++              ],
++              [
++                32.68589438933773,
++                45.52663379187257
++              ],
++              [
++                32.66370583186284,
++                45.52563107058867
++              ],
++              [
++                32.64312077736798,
++                45.52188979044979
++              ],
++              [
++                32.525284074162556,
++                45.45838108691365
++              ],
++              [
++                32.49490411219156,
++                45.43524910229854
++              ],
++              [
++                32.48107654411925,
++                45.408986638827514
++              ],
++              [
++                32.48514589713025,
++                45.39458067125969
++              ],
++              [
++                32.51256939517424,
++                45.34060655033625
++              ],
++              [
++                32.535915460470335,
++                45.33777248012882
++              ],
++              [
++                32.57027153843481,
++                45.32510892683359
++              ],
++              [
++                32.590830644991826,
++                45.32038723212662
++              ],
++              [
++                32.66380378113439,
++                45.320421746458976
++              ],
++              [
++                32.67760722618917,
++                45.32609231279554
++              ],
++              [
++                32.71316246802607,
++                45.353283572618125
++              ],
++              [
++                32.72817188836078,
++                45.36074681043402
++              ],
++              [
++                32.750518060251466,
++                45.36371725645313
++              ],
++              [
++                32.89973931692998,
++                45.35412322462227
++              ],
++              [
++                32.941197846443885,
++                45.34245505845169
++              ],
++              [
++                32.97701667405008,
++                45.32596743563991
++              ],
++              [
++                33.04296090827762,
++                45.2853982930032
++              ],
++              [
++                33.05274355585479,
++                45.28154273654923
++              ],
++              [
++                33.06850284417635,
++                45.27703461892352
++              ],
++              [
++                33.07825272648239,
++                45.272210805127315
++              ],
++              [
++                33.089426322403455,
++                45.25656353201492
++              ],
++              [
++                33.09897492343546,
++                45.247820101667884
++              ],
++              [
++                33.12384611720435,
++                45.238235755071685
++              ],
++              [
++                33.15767197859745,
++                45.20755227709648
++              ],
++              [
++                33.172959979330074,
++                45.19681657531794
++              ],
++              [
++                33.21837666514142,
++                45.187878368659824
++              ],
++              [
++                33.24017433636709,
++                45.180191106261134
++              ],
++              [
++                33.248571989896675,
++                45.16588271012458
++              ],
++              [
++                33.259649216030766,
++                45.155918961282026
++              ],
++              [
++                33.28309785485047,
++                45.16064860772312
++              ],
++              [
++                33.31767999550894,
++                45.17535522412791
++              ],
++              [
++                33.35458473323109,
++                45.18598673360148
++              ],
++              [
++                33.39725661527919,
++                45.18973663076909
++              ],
++              [
++                33.41344561756824,
++                45.18490731877088
++              ],
++              [
++                33.468468576977216,
++                45.149132412229676
++              ],
++              [
++                33.537128652906205,
++                45.11719769268973
++              ],
++              [
++                33.56161328289443,
++                45.094099022711475
++              ],
++              [
++                33.57837628774928,
++                45.053145935448015
++              ],
++              [
++                33.58247744978442,
++                45.027377243150454
++              ],
++              [
++                33.5851414316958,
++                45.01816461606674
++              ],
++              [
++                33.6031021265521,
++                44.993103583251695
++              ],
++              [
++                33.605922209331794,
++                44.986905272229734
++              ],
++              [
++                33.60843524291815,
++                44.97039962759274
++              ],
++              [
++                33.61943161357851,
++                44.93184946652454
++              ],
++              [
++                33.619484500808824,
++                44.90819321920554
++              ],
++              [
++                33.61549738593425,
++                44.88894092276257
++              ],
++              [
++                33.608561183117274,
++                44.871288478948514
++              ],
++              [
++                33.59889474705494,
++                44.859790298912856
++              ],
++              [
++                33.55904244709464,
++                44.850057575124595
++              ],
++              [
++                33.54667558363471,
++                44.83724531175508
++              ],
++              [
++                33.53701832136994,
++                44.81871953508235
++              ],
++              [
++                33.5303157846202,
++                44.798338017069625
++              ],
++              [
++                33.5249116915937,
++                44.78918633101301
++              ],
++              [
++                33.51669091675143,
++                44.784809980590666
++              ],
++              [
++                33.524785531609865,
++                44.77183212449111
++              ],
++              [
++                33.5302902535075,
++                44.75724515985675
++              ],
++              [
++                33.53710734694323,
++                44.73034290771247
++              ],
++              [
++                33.54650992495621,
++                44.70989226909535
++              ],
++              [
++                33.5481286806762,
++                44.699106546699085
++              ],
++              [
++                33.543995566510915,
++                44.68230506537358
++              ],
++              [
++                33.53580273994743,
++                44.6726082589706
++              ],
++              [
++                33.52337411931097,
++                44.661863083605255
++              ],
++              [
++                33.515320778874354,
++                44.6491266698327
++              ],
++              [
++                33.516377841582795,
++                44.63464990118433
++              ],
++              [
++                33.52466971637648,
++                44.62863961572572
++              ],
++              [
++                33.557474298027785,
++                44.62473000923737
++              ],
++              [
++                33.5710648827386,
++                44.620853511273225
++              ],
++              [
++                33.55105839203679,
++                44.61506440493406
++              ],
++              [
++                33.499905706797676,
++                44.61452599304897
++              ],
++              [
++                33.48451102966331,
++                44.60992438254493
++              ],
++              [
++                33.47658499621011,
++                44.60714391514574
++              ],
++              [
++                33.46705078205747,
++                44.60616254193252
++              ],
++              [
++                33.44476599234898,
++                44.607062134677875
++              ],
++              [
++                33.4353466482458,
++                44.60509936890821
++              ],
++              [
++                33.413591053005575,
++                44.593500212748125
++              ],
++              [
++                33.40543527945235,
++                44.59055535193136
++              ],
++              [
++                33.37510958624222,
++                44.58564691897425
++              ],
++              [
++                33.37074452434078,
++                44.58851022190515
++              ],
++              [
++                33.372237834990756,
++                44.576810695127364
++              ],
++              [
++                33.37913003799301,
++                44.56412673079859
++              ],
++              [
++                33.48759131590526,
++                44.51024086451031
++              ],
++              [
++                33.50011215135888,
++                44.50041002882833
++              ],
++              [
++                33.517917009115365,
++                44.49074142372788
++              ],
++              [
++                33.53836387802215,
++                44.49164280212756
++              ],
++              [
++                33.56041892763031,
++                44.4966411022441
++              ],
++              [
++                33.57822378538677,
++                44.497542389459795
++              ],
++              [
++                33.59062975079095,
++                44.48975808594983
++              ],
++              [
++                33.619577003408466,
++                44.46229988129974
++              ],
++              [
++                33.62635433636015,
++                44.45336293328907
++              ],
++              [
++                33.63175322871038,
++                44.434828756313124
++              ],
++              [
++                33.645537634715026,
++                44.42498521035591
++              ],
++              [
++                33.721007257593925,
++                44.39946630464436
++              ],
++              [
++                33.74168386660085,
++                44.39560878121904
++              ],
++              [
++                33.80727466517129,
++                44.39454176175843
++              ],
++              [
++                33.81841706002561,
++                44.39552670349164
++              ],
++              [
++                33.83909366903248,
++                44.40143600575672
++              ],
++              [
++                33.85149963444792,
++                44.40143600575945
++              ],
++              [
++                33.91467816197718,
++                44.38387049706651
++              ],
++              [
++                33.938111652185,
++                44.38083293528811
++              ],
++              [
++                33.957065210440874,
++                44.38272116790142
++              ],
++              [
++                34.06614966692763,
++                44.42019923628979
++              ],
++              [
++                34.088893936836286,
++                44.42200415824283
++              ],
++              [
++                34.10279321289039,
++                44.42487551014821
++              ],
++              [
++                34.135933345669,
++                44.44163597968952
++              ],
++              [
++                34.14696087047267,
++                44.44959070749778
++              ],
++              [
++                34.16058918507403,
++                44.466287285335795
++              ],
++              [
++                34.170123399227776,
++                44.48186111741296
++              ],
++              [
++                34.182759104731986,
++                44.49267838558103
++              ],
++              [
++                34.22923417224524,
++                44.49949719774551
++              ],
++              [
++                34.24301857824986,
++                44.50744404277697
++              ],
++              [
++                34.263903954150294,
++                44.53186886058606
++              ],
++              [
++                34.26631622520165,
++                44.53555362837611
++              ],
++              [
++                34.26631622520165,
++                44.54153064468656
++              ],
++              [
++                34.27033667695244,
++                44.545378535987936
++              ],
++              [
++                34.2757355693048,
++                44.54644280144541
++              ],
++              [
++                34.285384653508004,
++                44.54562413743594
++              ],
++              [
++                34.299973149863405,
++                44.54554227040174
++              ],
++              [
++                34.32260254971496,
++                44.543577427039224
++              ],
++              [
++                34.3308731933177,
++                44.54546040325087
++              ],
++              [
++                34.340292537420794,
++                44.55798473830754
++              ],
++              [
++                34.38042135640006,
++                44.631830317636684
++              ],
++              [
++                34.41495238900856,
++                44.673669777529994
++              ],
++              [
++                34.424193090575585,
++                44.68239452736094
++              ],
++              [
++                34.42959198292681,
++                44.68884644523774
++              ],
++              [
++                34.469399167794535,
++                44.730194532749294
++              ],
++              [
++                34.47376422969597,
++                44.73011292571252
++              ],
++              [
++                34.47376422969597,
++                44.72635887754967
++              ],
++              [
++                34.475142670296464,
++                44.723502373339585
++              ],
++              [
++                34.499724861011515,
++                44.74292382044041
++              ],
++              [
++                34.532800295801195,
++                44.752620844929055
++              ],
++              [
++                34.61217550038418,
++                44.76534519537847
++              ],
++              [
++                34.65065696715081,
++                44.777088262503725
++              ],
++              [
++                34.72084256772871,
++                44.811080759265764
++              ],
++              [
++                34.756796893391225,
++                44.82094054159748
++              ],
++              [
++                34.82646979041766,
++                44.81208604604609
++              ],
++              [
++                34.84289620758207,
++                44.816893835303176
++              ],
++              [
++                34.856910353686715,
++                44.82373813182468
++              ],
++              [
++                34.889648317948144,
++                44.817871641692506
++              ],
++              [
++                34.90733830566026,
++                44.820886440346584
++              ],
++              [
++                34.922960632465504,
++                44.83050015059965
++              ],
++              [
++                34.92950822531711,
++                44.83652826953224
++              ],
++              [
++                34.94179932067178,
++                44.84019370922482
++              ],
++              [
++                34.95282684547897,
++                44.841415470643284
++              ],
++              [
++                34.98567967978991,
++                44.840275160795755
++              ],
++              [
++                35.0053224583441,
++                44.83538786296728
++              ],
++              [
++                35.017958163849414,
++                44.82219008824552
++              ],
++              [
++                35.02703289780189,
++                44.80890779582285
++              ],
++              [
++                35.037933245998005,
++                44.79869792240089
++              ],
++              [
++                35.08073333784134,
++                44.793525442788905
++              ],
++              [
++                35.1080207326404,
++                44.824553365795765
++              ],
++              [
++                35.130368105574235,
++                44.86879838545747
++              ],
++              [
++                35.15485200090768,
++                44.90071251697748
++              ],
++              [
++                35.17111229780758,
++                44.90746386008772
++              ],
++              [
++                35.21522068940149,
++                44.91421441031795
++              ],
++              [
++                35.233163085981715,
++                44.925728224907715
++              ],
++              [
++                35.25636688416236,
++                44.95896657181197
++              ],
++              [
++                35.27300098099195,
++                44.96690119386028
++              ],
++              [
++                35.29748487632534,
++                44.95605693543271
++              ],
++              [
++                35.30496087491386,
++                44.96121482614441
++              ],
++              [
++                35.315240372954605,
++                44.965711070514175
++              ],
++              [
++                35.31935217217088,
++                44.96941359539801
++              ],
++              [
++                35.36757236298112,
++                44.94362319076086
++              ],
++              [
++                35.36103086422793,
++                44.97364475976596
++              ],
++              [
++                35.362152264014156,
++                44.98593980935419
++              ],
++              [
++                35.374674561627444,
++                44.997835734117416
++              ],
++              [
++                35.389439658813274,
++                45.00180049366759
++              ],
++              [
++                35.42270785247763,
++                45.00087540764923
++              ],
++              [
++                35.43504325012745,
++                45.00470780964241
++              ],
++              [
++                35.43504325012745,
++                45.011446929213974
++              ],
++              [
++                35.40631957913584,
++                45.02015821022701
++              ],
++              [
++                35.40089948016896,
++                45.025046135473445
++              ],
++              [
++                35.39790908073891,
++                45.03482073400548
++              ],
++              [
++                35.40052568024015,
++                45.042216617888045
++              ],
++              [
++                35.40631957913584,
++                45.051328088783805
++              ],
++              [
++                35.40744097892215,
++                45.06294640963205
++              ],
++              [
++                35.41734667704213,
++                45.0708666385693
++              ],
++              [
++                35.469304867139925,
++                45.10068964922732
++              ],
++              [
++                35.5070260597534,
++                45.113341616151644
++              ],
++              [
++                35.54758335202416,
++                45.12019982412133
++              ],
++              [
++                35.59019654390909,
++                45.11993606213795
++              ],
++              [
++                35.63411803553862,
++                45.11439677872579
++              ],
++              [
++                35.70669729572677,
++                45.09480210570922
++              ],
++              [
++                35.771782422456766,
++                45.06572995732262
++              ],
++              [
++                35.78430472007,
++                45.057941041321754
++              ],
++              [
++                35.81250040352472,
++                45.031852200991295
++              ],
++              [
++                35.81941570220667,
++                45.021152336906454
++              ],
++              [
++                35.82763930064016,
++                44.99895365027004
++              ],
++              [
++                35.848198296721705,
++                44.99208088455586
++              ],
++              [
++                35.916977483614176,
++                45.00172895661731
++              ],
++              [
++                35.99360646900681,
++                44.997896355361604
++              ],
++              [
++                36.00893226608571,
++                45.00926125333629
++              ],
++              [
++                36.02539976723364,
++                45.03288661039673
++              ],
++              [
++                36.047827762958946,
++                45.048074065419456
++              ],
++              [
++                36.078666257082034,
++                45.03883000769565
++              ],
++              [
++                36.079137312377895,
++                45.046610970582435
++              ],
++              [
++                36.135020401727616,
++                45.02125162210126
++              ],
++              [
++                36.2241716847341,
++                45.00751061631556
++              ],
++              [
++                36.24398308095806,
++                45.011474706353084
++              ],
++              [
++                36.24828178013877,
++                45.01649549321965
++              ],
++              [
++                36.25332807917695,
++                45.03247980324494
++              ],
++              [
++                36.25743987839326,
++                45.03842324279259
++              ],
++              [
++                36.267158676549116,
++                45.043573724415154
++              ],
++              [
++                36.2783726744118,
++                45.04555455542638
++              ],
++              [
++                36.36740852558336,
++                45.04833265291825
++              ],
++              [
++                36.44029951169139,
++                45.06787222615526
++              ],
++              [
++                36.45375630913995,
++                45.07631970334319
++              ],
++              [
++                36.455251508854985,
++                45.09202341204062
++              ],
++              [
++                36.44142091149291,
++                45.10709638287736
++              ],
++              [
++                36.41432041665814,
++                45.12872568311289
++              ],
++              [
++                36.40852651776157,
++                45.149160473330085
++              ],
++              [
++                36.409997342308856,
++                45.171615955386955
++              ],
++              [
++                36.418312796420764,
++                45.23001671705953
++              ],
++              [
++                36.42672329481775,
++                45.25186253492981
++              ],
++              [
++                36.43756477765089,
++                45.27227491599612
++              ],
++              [
++                36.4497132753354,
++                45.28542626329343
++              ],
++              [
++                36.45905827355429,
++                45.28753019598713
++              ],
++              [
++                36.4814862692796,
++                45.28845064200263
++              ],
++              [
++                36.4909554290368,
++                45.29213135137758
++              ],
++              [
++                36.49637552800283,
++                45.300940007322055
++              ],
++              [
++                36.49394582846682,
++                45.305015191082816
++              ],
++              [
++                36.48871262946426,
++                45.30935296803605
++              ],
++              [
++                36.48460083024801,
++                45.315924724862185
++              ],
++              [
++                36.489647129296515,
++                45.336413860372005
++              ],
++              [
++                36.502169426909745,
++                45.34731734941451
++              ],
++              [
++                36.52104632331191,
++                45.35033842661815
++              ],
++              [
++                36.544281237819945,
++                45.34731734942025
++              ],
++              [
++                36.57455903204905,
++                45.33601971904315
++              ],
++              [
++                36.585399229982954,
++                45.333917585593355
++              ],
++              [
++                36.59810088537549,
++                45.334837278577254
++              ],
++              [
++                36.630808379142394,
++                45.34048649352954
++              ],
++              [
++                36.637536777859964,
++                45.3511265071989
++              ],
++              [
++                36.63099527910589,
++                45.3741073632589
++              ],
++              [
++                36.61359545390113,
++                45.40895280985421
++              ],
++              [
++                36.59845655678569,
++                45.421547717459106
++              ],
++              [
++                36.58331765967199,
++                45.42731944465129
++              ],
++              [
++                36.566309762912795,
++                45.42548305000767
++              ],
++              [
++                36.54836736633254,
++                45.41210180010589
++              ],
++              [
++                36.53285466928139,
++                45.4090840212946
++              ],
++              [
++                36.51565987255873,
++                45.41957994832251
++              ],
++              [
++                36.49117597722616,
++                45.44279525429408
++              ],
++              [
++                36.47043008117939,
++                45.4458112314303
++              ],
++              [
++                36.411182792482634,
++                45.43610707766504
++              ],
++              [
++                36.391371396258705,
++                45.43991025572652
++              ],
++              [
++                36.35959840231365,
++                45.45407156049933
++              ],
++              [
++                36.33960010612526,
++                45.45695583486963
++              ],
++              [
++                36.33025510790637,
++                45.454464879327446
++              ],
++              [
++                36.32053630976225,
++                45.44856480887407
++              ],
++              [
++                36.31156511147125,
++                45.4438443081136
++              ],
++              [
++                36.29885591389362,
++                45.442795254299995
++              ],
++              [
++                36.3072664122906,
++                45.46115087970253
++              ],
++              [
++                36.30016421364425,
++                45.47320989503609
++              ],
++              [
++                36.283717016779036,
++                45.476355300848866
++              ],
++              [
++                36.267082919949445,
++                45.46704963343626
++              ],
++              [
++                36.25213092279836,
++                45.46115087970253
++              ],
++              [
++                36.13681364478941,
++                45.46219959214511
++              ],
++              [
++                36.11700224855986,
++                45.45721803432335
++              ],
++              [
++                36.097003952371466,
++                45.441483909606006
++              ],
++              [
++                36.06952965760803,
++                45.43046741078453
++              ],
++              [
++                36.0655449627526,
++                45.42553028973455
++              ],
++              [
++                36.05134056545904,
++                45.39535242162091
++              ],
++              [
++                36.022557970944945,
++                45.368441166003805
++              ],
++              [
++                35.986486277818386,
++                45.362926059418186
++              ],
++              [
++                35.94723728529826,
++                45.372380198658874
++              ],
++              [
++                35.87220216002379,
++                45.404075760536614
++              ],
++              [
++                35.85388596351393,
++                45.413916621802144
++              ],
++              [
++                35.84715756479628,
++                45.426379251448395
++              ],
++              [
++                35.8524047739447,
++                45.44386497541683
++              ],
++              [
++                35.85950697259193,
++                45.45933624762881
++              ],
++              [
++                35.857824872912545,
++                45.469953901705
++              ],
++              [
++                35.83278027768503,
++                45.47087138287168
++              ],
++              [
++                35.8167068807486,
++                45.46392436820739
++              ],
++              [
++                35.80362388324218,
++                45.44963442058864
++              ],
++              [
++                35.79469305616038,
++                45.42980210462429
++              ],
++              [
++                35.791889556694684,
++                45.41209230278156
++              ],
++              [
++                35.772265060435046,
++                45.39214572935421
++              ],
++              [
++                35.767405661361295,
++                45.38873311015669
++              ],
++              [
++                35.75189296431793,
++                45.386632934388984
++              ],
++              [
++                35.7481549650407,
++                45.379938103368545
++              ],
++              [
++                35.746846665290036,
++                45.369960021421576
++              ],
++              [
++                35.74423006578874,
++                45.36076812520648
++              ],
++              [
++                35.71619507113218,
++                45.34040932557082
++              ],
++              [
++                35.69451467527287,
++                45.32989869277279
++              ],
++              [
++                35.51720627467216,
++                45.29506847418358
++              ],
++              [
++                35.48038698168983,
++                45.2979608697527
++              ],
++              [
++                35.33194061536096,
++                45.371562726652314
++              ],
++              [
++                35.04491375777232,
++                45.669545248704424
++              ],
++              [
++                35.00230056589345,
++                45.7290693869553
++              ],
++              [
++                34.70631294999043,
++                46.024929846739866
++              ],
++              [
++                34.35868883309806,
++                46.106725558140795
++              ],
++              [
++                34.00905273547181,
++                46.55925987559425
++              ]
++            ]
++          ]
++        }
++      }
++    }
++  },
++  "version": 8,
++  "metadata": {
++    "maptiler:copyright": "This style was generated on MapTiler Cloud. Usage is governed by the license terms in https://github.com/maplibre/demotiles/blob/gh-pages/LICENSE",
++    "openmaptiles:version": "3.x"
++  },
++  "projection": {
++    "type": "globe"
++  }
++}
+diff --git a/platform/android/MapLibreAndroidTestApp/src/main/java/org/maplibre/android/testapp/activity/style/GlobeActivity.kt b/platform/android/MapLibreAndroidTestApp/src/main/java/org/maplibre/android/testapp/activity/style/GlobeActivity.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f94c50e0c5fa7b9a718c288e1e4ed25d9327e13
+--- /dev/null
++++ b/platform/android/MapLibreAndroidTestApp/src/main/java/org/maplibre/android/testapp/activity/style/GlobeActivity.kt
+@@ -0,0 +1,67 @@
++package org.maplibre.android.testapp.activity.style
++
++import android.os.Bundle
++import androidx.appcompat.app.AppCompatActivity
++import org.maplibre.android.camera.CameraUpdateFactory
++import org.maplibre.android.geometry.LatLng
++import org.maplibre.android.maps.Style
++import org.maplibre.android.testapp.databinding.ActivityMapSimpleBinding
++
++/**
++ * Activity showcasing a style that renders the map as a globe.
++ */
++class GlobeActivity : AppCompatActivity() {
++    private lateinit var binding: ActivityMapSimpleBinding
++
++    override fun onCreate(savedInstanceState: Bundle?) {
++        super.onCreate(savedInstanceState)
++        binding = ActivityMapSimpleBinding.inflate(layoutInflater)
++        setContentView(binding.root)
++        // # --8<-- [start:setup]
++        binding.mapView.getMapAsync { map ->
++            map.moveCamera(CameraUpdateFactory.newLatLngZoom(cameraTarget, cameraZoom))
++            map.setStyle(Style.Builder().fromUri("asset://globe.json"))
++        }
++        // # --8<-- [end:setup]
++    }
++
++    override fun onStart() {
++        super.onStart()
++        binding.mapView.onStart()
++    }
++
++    override fun onResume() {
++        super.onResume()
++        binding.mapView.onResume()
++    }
++
++    override fun onPause() {
++        super.onPause()
++        binding.mapView.onPause()
++    }
++
++    override fun onStop() {
++        super.onStop()
++        binding.mapView.onStop()
++    }
++
++    override fun onLowMemory() {
++        super.onLowMemory()
++        binding.mapView.onLowMemory()
++    }
++
++    override fun onDestroy() {
++        super.onDestroy()
++        binding.mapView.onDestroy()
++    }
++
++    override fun onSaveInstanceState(outState: Bundle) {
++        super.onSaveInstanceState(outState)
++        binding.mapView.onSaveInstanceState(outState)
++    }
++
++    companion object {
++        const val cameraZoom = 1.2
++        val cameraTarget = LatLng(25.0, 10.0)
++    }
++}
+diff --git a/platform/android/MapLibreAndroidTestApp/src/main/res/values/descriptions.xml b/platform/android/MapLibreAndroidTestApp/src/main/res/values/descriptions.xml
+index 5456509043d301880eb358a2121a1a51c373d9fc..6054c455c845e144b0f149e21ba5937cee7a8948 100644
+--- a/platform/android/MapLibreAndroidTestApp/src/main/res/values/descriptions.xml
++++ b/platform/android/MapLibreAndroidTestApp/src/main/res/values/descriptions.xml
+@@ -87,6 +87,7 @@
+     <string name="description_grid_source">Example Custom Geometry Source</string>
+     <string name="description_custom_vector_source">CustomVectorSource with synthetic MVT tiles</string>
+     <string name="description_no_style">Load a map without providing a style URI or JSON</string>
++    <string name="description_globe">Render the map as a globe from a style with a globe projection</string>
+     <string name="description_vector_tile">Load MVT data</string>
+     <string name="description_pmtiles">Load PMTiles data</string>
+     <string name="description_local_glyph">Suzhou using Droid Sans for Chinese glyphs</string>
+diff --git a/platform/android/MapLibreAndroidTestApp/src/main/res/values/titles.xml b/platform/android/MapLibreAndroidTestApp/src/main/res/values/titles.xml
+index 8d86346785c0067986a08ac19f466d803cbc34a0..f2e11a8eeb2c98a64801230195551ea39ba8fc6b 100644
+--- a/platform/android/MapLibreAndroidTestApp/src/main/res/values/titles.xml
++++ b/platform/android/MapLibreAndroidTestApp/src/main/res/values/titles.xml
+@@ -83,6 +83,7 @@
+     <string name="activity_grid_source">Grid Source</string>
+     <string name="activity_custom_vector_source">Custom Vector Source</string>
+     <string name="activity_no_style">No Style URI/JSON</string>
++    <string name="activity_globe">Globe</string>
+     <string name="activity_vector_tile">Vector Tile source</string>
+     <string name="activity_pmtiles">PMTiles</string>
+     <string name="activity_local_glyph">Local CJK glyph generation</string>
+diff --git a/platform/glfw/glfw_view.cpp b/platform/glfw/glfw_view.cpp
+index 65b57110f366265bfb7ba14b89aadd794d18a324..52d2d5bc62ec1cfd1a73884dc858de69f51518ad 100644
+--- a/platform/glfw/glfw_view.cpp
++++ b/platform/glfw/glfw_view.cpp
+@@ -16,6 +16,7 @@
+ #include <mln/style/layers/fill_extrusion_layer.hpp>
+ #include <mln/style/layers/fill_layer.hpp>
+ #include <mln/style/layers/line_layer.hpp>
++#include <mln/style/projection.hpp>
+ #include <mln/style/sources/custom_geometry_source.hpp>
+ #include <mln/style/sources/geojson_source.hpp>
+ #include <mln/style/style.hpp>
+@@ -347,6 +348,7 @@ GLFWView::GLFWView(bool fullscreen_,
+         "- Press `J` to take a snapshot of a current map with an extrusions "
+         "overlay.\n");
+     printf("- Press `Y` to start a camera fly-by demo\n");
++    printf("- Press `F9` to toggle between the globe and Mercator\n");
+     printf("\n");
+     printf(
+         "- Press `1` through `6` to add increasing numbers of point "
+@@ -670,6 +672,16 @@ void GLFWView::onKey(GLFWwindow *window, int key, int /*scancode*/, int action,
+             case GLFW_KEY_F8: {
+                 tileLodZoomShift(*view->map, true);
+             } break;
++            case GLFW_KEY_F9: {
++                auto &style = view->map->getStyle();
++                const auto *current = style.getProjection();
++                const bool globe = current && current->getType().isConstant() &&
++                                   current->getType().asConstant().from == mln::ProjectionType::Globe;
++                auto projection = std::make_unique<mln::style::Projection>();
++                projection->setType(
++                    mln::ProjectionDefinition(globe ? mln::ProjectionType::Mercator : mln::ProjectionType::Globe));
++                style.setProjection(std::move(projection));
++            } break;
+         }
+     }
+ 
+diff --git a/platform/ios/BUILD.bazel b/platform/ios/BUILD.bazel
+index 2fda4281dc9d4aae4a421a1419321007bb67c3d7..66063adfd2ab5de3db23efa8135a83c50009accb 100644
+--- a/platform/ios/BUILD.bazel
++++ b/platform/ios/BUILD.bazel
+@@ -221,6 +221,7 @@ _IOS_APPLICATION_RESOURCES = [
+     "app/LaunchScreen.storyboard",
+     "app/simple_route.json",
+     "app/fill_filter_style.json",
++    "app/globe.json",
+     "//platform/darwin:app/PluginLayerTestStyle.json",
+     "//platform/darwin:test/amsterdam.geojson",
+ ] + glob([
+diff --git a/platform/ios/app/MBXViewController.mm b/platform/ios/app/MBXViewController.mm
+index 3d17ebb6cd958967b7559b1188dc21080dbc76ba..0e5aa57b737a052a9e489bfdeab87e389926745e 100644
+--- a/platform/ios/app/MBXViewController.mm
++++ b/platform/ios/app/MBXViewController.mm
+@@ -2540,6 +2540,13 @@ CLLocationCoordinate2D randomWorldCoordinate(void) {
+     [self.styleURLs addObject:url];
+   }
+ 
++  /// The same style again with `"projection": {"type": "globe"}`, so the map renders as a globe.
++  NSURL *globeURL = [[NSBundle mainBundle] URLForResource:@"globe.json" withExtension:nil];
++  if (globeURL) {
++    [self.styleNames addObject:@"MapLibre Basic - Globe"];
++    [self.styleURLs addObject:globeURL];
++  }
++
+   /// Add MapLibre Styles if an `apiKey` exists
+   NSString *apiKey = [MLNSettings apiKey];
+   if (apiKey.length) {
+diff --git a/platform/ios/app/globe.json b/platform/ios/app/globe.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..62e4b108d94080688e69b6291597e2f9196ca7ff
+--- /dev/null
++++ b/platform/ios/app/globe.json
+@@ -0,0 +1,2068 @@
++{
++  "name": "MapLibre Demo Tiles (globe)",
++  "zoom": 1.2,
++  "pitch": 0,
++  "center": [
++    10,
++    25
++  ],
++  "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
++  "layers": [
++    {
++      "id": "background",
++      "type": "background",
++      "paint": {
++        "background-color": "#D8F2FF"
++      },
++      "filter": [
++        "all"
++      ],
++      "layout": {
++        "visibility": "visible"
++      },
++      "maxzoom": 24
++    },
++    {
++      "id": "coastline",
++      "type": "line",
++      "paint": {
++        "line-blur": 0.5,
++        "line-color": "#198EC8",
++        "line-width": {
++          "stops": [
++            [
++              0,
++              2
++            ],
++            [
++              6,
++              6
++            ],
++            [
++              14,
++              9
++            ],
++            [
++              22,
++              18
++            ]
++          ]
++        }
++      },
++      "filter": [
++        "all"
++      ],
++      "layout": {
++        "line-cap": "round",
++        "line-join": "round",
++        "visibility": "visible"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "minzoom": 0,
++      "source-layer": "countries"
++    },
++    {
++      "id": "countries-fill",
++      "type": "fill",
++      "paint": {
++        "fill-color": [
++          "match",
++          [
++            "get",
++            "ADM0_A3"
++          ],
++          [
++            "ARM",
++            "ATG",
++            "AUS",
++            "BTN",
++            "CAN",
++            "COG",
++            "CZE",
++            "GHA",
++            "GIN",
++            "HTI",
++            "ISL",
++            "JOR",
++            "KHM",
++            "KOR",
++            "LVA",
++            "MLT",
++            "MNE",
++            "MOZ",
++            "PER",
++            "SAH",
++            "SGP",
++            "SLV",
++            "SOM",
++            "TJK",
++            "TUV",
++            "UKR",
++            "WSM"
++          ],
++          "#D6C7FF",
++          [
++            "AZE",
++            "BGD",
++            "CHL",
++            "CMR",
++            "CSI",
++            "DEU",
++            "DJI",
++            "GUY",
++            "HUN",
++            "IOA",
++            "JAM",
++            "LBN",
++            "LBY",
++            "LSO",
++            "MDG",
++            "MKD",
++            "MNG",
++            "MRT",
++            "NIU",
++            "NZL",
++            "PCN",
++            "PYF",
++            "SAU",
++            "SHN",
++            "STP",
++            "TTO",
++            "UGA",
++            "UZB",
++            "ZMB"
++          ],
++          "#EBCA8A",
++          [
++            "AGO",
++            "ASM",
++            "ATF",
++            "BDI",
++            "BFA",
++            "BGR",
++            "BLZ",
++            "BRA",
++            "CHN",
++            "CRI",
++            "ESP",
++            "HKG",
++            "HRV",
++            "IDN",
++            "IRN",
++            "ISR",
++            "KNA",
++            "LBR",
++            "LCA",
++            "MAC",
++            "MUS",
++            "NOR",
++            "PLW",
++            "POL",
++            "PRI",
++            "SDN",
++            "TUN",
++            "UMI",
++            "USA",
++            "USG",
++            "VIR",
++            "VUT"
++          ],
++          "#C1E599",
++          [
++            "ARE",
++            "ARG",
++            "BHS",
++            "CIV",
++            "CLP",
++            "DMA",
++            "ETH",
++            "GAB",
++            "GRD",
++            "HMD",
++            "IND",
++            "IOT",
++            "IRL",
++            "IRQ",
++            "ITA",
++            "KOS",
++            "LUX",
++            "MEX",
++            "NAM",
++            "NER",
++            "PHL",
++            "PRT",
++            "RUS",
++            "SEN",
++            "SUR",
++            "TZA",
++            "VAT"
++          ],
++          "#E7E58F",
++          [
++            "AUT",
++            "BEL",
++            "BHR",
++            "BMU",
++            "BRB",
++            "CYN",
++            "DZA",
++            "EST",
++            "FLK",
++            "GMB",
++            "GUM",
++            "HND",
++            "JEY",
++            "KGZ",
++            "LIE",
++            "MAF",
++            "MDA",
++            "NGA",
++            "NRU",
++            "SLB",
++            "SOL",
++            "SRB",
++            "SWZ",
++            "THA",
++            "TUR",
++            "VEN",
++            "VGB"
++          ],
++          "#98DDA1",
++          [
++            "AIA",
++            "BIH",
++            "BLM",
++            "BRN",
++            "CAF",
++            "CHE",
++            "COM",
++            "CPV",
++            "CUB",
++            "ECU",
++            "ESB",
++            "FSM",
++            "GAZ",
++            "GBR",
++            "GEO",
++            "KEN",
++            "LTU",
++            "MAR",
++            "MCO",
++            "MDV",
++            "NFK",
++            "NPL",
++            "PNG",
++            "PRY",
++            "QAT",
++            "SLE",
++            "SPM",
++            "SYC",
++            "TCA",
++            "TKM",
++            "TLS",
++            "VNM",
++            "WEB",
++            "WSB",
++            "YEM",
++            "ZWE"
++          ],
++          "#83D5F4",
++          [
++            "ABW",
++            "ALB",
++            "AND",
++            "ATC",
++            "BOL",
++            "COD",
++            "CUW",
++            "CYM",
++            "CYP",
++            "EGY",
++            "FJI",
++            "GGY",
++            "IMN",
++            "KAB",
++            "KAZ",
++            "KWT",
++            "LAO",
++            "MLI",
++            "MNP",
++            "MSR",
++            "MYS",
++            "NIC",
++            "NLD",
++            "PAK",
++            "PAN",
++            "PRK",
++            "ROU",
++            "SGS",
++            "SVN",
++            "SWE",
++            "TGO",
++            "TWN",
++            "VCT",
++            "ZAF"
++          ],
++          "#B1BBF9",
++          [
++            "ATA",
++            "GRL"
++          ],
++          "#FFFFFF",
++          "#EAB38F"
++        ]
++      },
++      "filter": [
++        "all"
++      ],
++      "layout": {
++        "visibility": "visible"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "source-layer": "countries"
++    },
++    {
++      "id": "countries-boundary",
++      "type": "line",
++      "paint": {
++        "line-color": "rgba(255, 255, 255, 1)",
++        "line-width": {
++          "stops": [
++            [
++              1,
++              1
++            ],
++            [
++              6,
++              2
++            ],
++            [
++              14,
++              6
++            ],
++            [
++              22,
++              12
++            ]
++          ]
++        },
++        "line-opacity": {
++          "stops": [
++            [
++              3,
++              0.5
++            ],
++            [
++              6,
++              1
++            ]
++          ]
++        }
++      },
++      "layout": {
++        "line-cap": "round",
++        "line-join": "round",
++        "visibility": "visible"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "source-layer": "countries"
++    },
++    {
++      "id": "geolines",
++      "type": "line",
++      "paint": {
++        "line-color": "#1077B0",
++        "line-opacity": 1,
++        "line-dasharray": [
++          3,
++          3
++        ]
++      },
++      "filter": [
++        "all",
++        [
++          "!=",
++          "name",
++          "International Date Line"
++        ]
++      ],
++      "layout": {
++        "visibility": "visible"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "source-layer": "geolines"
++    },
++    {
++      "id": "geolines-label",
++      "type": "symbol",
++      "paint": {
++        "text-color": "#1077B0",
++        "text-halo-blur": 1,
++        "text-halo-color": "rgba(255, 255, 255, 1)",
++        "text-halo-width": 1
++      },
++      "filter": [
++        "all",
++        [
++          "!=",
++          "name",
++          "International Date Line"
++        ]
++      ],
++      "layout": {
++        "text-font": [
++          "Open Sans Semibold"
++        ],
++        "text-size": {
++          "stops": [
++            [
++              2,
++              12
++            ],
++            [
++              6,
++              16
++            ]
++          ]
++        },
++        "text-field": "{name}",
++        "visibility": "visible",
++        "symbol-placement": "line"
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "minzoom": 1,
++      "source-layer": "geolines"
++    },
++    {
++      "id": "countries-label",
++      "type": "symbol",
++      "paint": {
++        "text-color": "rgba(8, 37, 77, 1)",
++        "text-halo-blur": {
++          "stops": [
++            [
++              2,
++              0.2
++            ],
++            [
++              6,
++              0
++            ]
++          ]
++        },
++        "text-halo-color": "rgba(255, 255, 255, 1)",
++        "text-halo-width": {
++          "stops": [
++            [
++              2,
++              1
++            ],
++            [
++              6,
++              1.6
++            ]
++          ]
++        }
++      },
++      "filter": [
++        "all"
++      ],
++      "layout": {
++        "text-font": [
++          "Open Sans Semibold"
++        ],
++        "text-size": {
++          "stops": [
++            [
++              2,
++              10
++            ],
++            [
++              4,
++              12
++            ],
++            [
++              6,
++              16
++            ]
++          ]
++        },
++        "text-field": {
++          "stops": [
++            [
++              2,
++              "{ABBREV}"
++            ],
++            [
++              4,
++              "{NAME}"
++            ]
++          ]
++        },
++        "visibility": "visible",
++        "text-max-width": 10,
++        "text-transform": {
++          "stops": [
++            [
++              0,
++              "uppercase"
++            ],
++            [
++              2,
++              "none"
++            ]
++          ]
++        }
++      },
++      "source": "maplibre",
++      "maxzoom": 24,
++      "minzoom": 2,
++      "source-layer": "centroids"
++    },
++    {
++      "id": "crimea-fill",
++      "type": "fill",
++      "source": "crimea",
++      "paint": {
++        "fill-color": "#D6C7FF"
++      }
++    }
++  ],
++  "bearing": 0,
++  "sources": {
++    "maplibre": {
++      "url": "https://demotiles.maplibre.org/tiles/tiles.json",
++      "type": "vector"
++    },
++    "crimea": {
++      "type": "geojson",
++      "data": {
++        "type": "Feature",
++        "geometry": {
++          "type": "Polygon",
++          "coordinates": [
++            [
++              [
++                34.00905273547181,
++                46.55925987559425
++              ],
++              [
++                33.64325260204026,
++                46.34533545368038
++              ],
++              [
++                33.628682598560204,
++                46.12569762665683
++              ],
++              [
++                33.64292861730951,
++                46.10476396128129
++              ],
++              [
++                33.648473474905984,
++                46.09033047763651
++              ],
++              [
++                33.63876482059936,
++                46.077976784785335
++              ],
++              [
++                33.62782672238245,
++                46.06747935719011
++              ],
++              [
++                33.62911357645072,
++                46.05708111413949
++              ],
++              [
++                33.642686868727424,
++                46.02192963417187
++              ],
++              [
++                33.6429723910654,
++                46.01521185644708
++              ],
++              [
++                33.636224138774026,
++                46.006705833212465
++              ],
++              [
++                33.63052626465907,
++                45.99692992186792
++              ],
++              [
++                33.63193836679693,
++                45.988472992911284
++              ],
++              [
++                33.64276684834442,
++                45.984575360297384
++              ],
++              [
++                33.646928693041986,
++                45.97981936210982
++              ],
++              [
++                33.638745893564305,
++                45.96829769147004
++              ],
++              [
++                33.61958133326394,
++                45.951176418494185
++              ],
++              [
++                33.63181380398527,
++                45.9445404758078
++              ],
++              [
++                33.638921676216,
++                45.94737012930554
++              ],
++              [
++                33.64561542516918,
++                45.95403251372139
++              ],
++              [
++                33.65666403976448,
++                45.95687114427736
++              ],
++              [
++                33.6825817382811,
++                45.95878100879199
++              ],
++              [
++                33.738791807037614,
++                45.94836945227263
++              ],
++              [
++                33.758180142697,
++                45.94072970008301
++              ],
++              [
++                33.77735917288169,
++                45.92923970233858
++              ],
++              [
++                33.75927796793485,
++                45.92241179584471
++              ],
++              [
++                33.72529865009221,
++                45.91587363154565
++              ],
++              [
++                33.70875012326826,
++                45.91008760988058
++              ],
++              [
++                33.69378857293381,
++                45.91480850795665
++              ],
++              [
++                33.69092650243843,
++                45.89657370898402
++              ],
++              [
++                33.693592356906805,
++                45.87271465766318
++              ],
++              [
++                33.69226765972388,
++                45.86041392418218
++              ],
++              [
++                33.6704813511748,
++                45.8584273836251
++              ],
++              [
++                33.65936345808916,
++                45.85944682601249
++              ],
++              [
++                33.653870582376726,
++                45.86425922279372
++              ],
++              [
++                33.65107345584843,
++                45.87089907254003
++              ],
++              [
++                33.63067378180233,
++                45.88040685247182
++              ],
++              [
++                33.61945300059696,
++                45.88147266102649
++              ],
++              [
++                33.60987421595539,
++                45.88048951126686
++              ],
++              [
++                33.59906957603934,
++                45.877610457390375
++              ],
++              [
++                33.57828877687868,
++                45.86810261756233
++              ],
++              [
++                33.55357394560386,
++                45.84700625141778
++              ],
++              [
++                33.530220674480375,
++                45.84221983655459
++              ],
++              [
++                33.5192297395441,
++                45.84121682367507
++              ],
++              [
++                33.50832088442496,
++                45.84313067048083
++              ],
++              [
++                33.48901101848409,
++                45.85268298292175
++              ],
++              [
++                33.482152996405716,
++                45.854578171799005
++              ],
++              [
++                33.46719955896293,
++                45.849912739405056
++              ],
++              [
++                33.42447496599681,
++                45.83075886348303
++              ],
++              [
++                33.40940172404095,
++                45.82691953557702
++              ],
++              [
++                33.37918350072067,
++                45.802867525073566
++              ],
++              [
++                33.37362145339398,
++                45.79619281922518
++              ],
++              [
++                33.33805543634864,
++                45.78577808972071
++              ],
++              [
++                33.26498872665803,
++                45.75410774187094
++              ],
++              [
++                33.22887541283427,
++                45.75131270772724
++              ],
++              [
++                33.19548267281132,
++                45.7644887297206
++              ],
++              [
++                33.1789202379222,
++                45.78010311364778
++              ],
++              [
++                33.1688456078636,
++                45.78470227904205
++              ],
++              [
++                33.161012432811674,
++                45.77921593899549
++              ],
++              [
++                33.15951585299757,
++                45.76864464913777
++              ],
++              [
++                33.165962301438725,
++                45.762685940125465
++              ],
++              [
++                33.1750888126426,
++                45.759218220695715
++              ],
++              [
++                33.181464829753,
++                45.75490447884948
++              ],
++              [
++                33.17613930782352,
++                45.7437961960276
++              ],
++              [
++                33.16369168844906,
++                45.735912015025065
++              ],
++              [
++                32.93692665480876,
++                45.662114646778264
++              ],
++              [
++                32.86839112407645,
++                45.63044340698664
++              ],
++              [
++                32.83803944575723,
++                45.60834075026611
++              ],
++              [
++                32.82702772424804,
++                45.59576101516498
++              ],
++              [
++                32.82433467080986,
++                45.58705137380335
++              ],
++              [
++                32.82563941622885,
++                45.579605763895614
++              ],
++              [
++                32.82993674258438,
++                45.56978311819469
++              ],
++              [
++                32.82851940940563,
++                45.56227808675749
++              ],
++              [
++                32.813310142795274,
++                45.55930933158257
++              ],
++              [
++                32.80213583657516,
++                45.560145780074464
++              ],
++              [
++                32.78258622159436,
++                45.565158335073846
++              ],
++              [
++                32.77333922465823,
++                45.56689313356526
++              ],
++              [
++                32.758306734735356,
++                45.565030173463356
++              ],
++              [
++                32.750177256846115,
++                45.55943726334968
++              ],
++              [
++                32.74340732630185,
++                45.55261895849793
++              ],
++              [
++                32.73524549539499,
++                45.54598788110354
++              ],
++              [
++                32.72031700779701,
++                45.53735927760957
++              ],
++              [
++                32.70536040418847,
++                45.53169142131733
++              ],
++              [
++                32.68589438933773,
++                45.52663379187257
++              ],
++              [
++                32.66370583186284,
++                45.52563107058867
++              ],
++              [
++                32.64312077736798,
++                45.52188979044979
++              ],
++              [
++                32.525284074162556,
++                45.45838108691365
++              ],
++              [
++                32.49490411219156,
++                45.43524910229854
++              ],
++              [
++                32.48107654411925,
++                45.408986638827514
++              ],
++              [
++                32.48514589713025,
++                45.39458067125969
++              ],
++              [
++                32.51256939517424,
++                45.34060655033625
++              ],
++              [
++                32.535915460470335,
++                45.33777248012882
++              ],
++              [
++                32.57027153843481,
++                45.32510892683359
++              ],
++              [
++                32.590830644991826,
++                45.32038723212662
++              ],
++              [
++                32.66380378113439,
++                45.320421746458976
++              ],
++              [
++                32.67760722618917,
++                45.32609231279554
++              ],
++              [
++                32.71316246802607,
++                45.353283572618125
++              ],
++              [
++                32.72817188836078,
++                45.36074681043402
++              ],
++              [
++                32.750518060251466,
++                45.36371725645313
++              ],
++              [
++                32.89973931692998,
++                45.35412322462227
++              ],
++              [
++                32.941197846443885,
++                45.34245505845169
++              ],
++              [
++                32.97701667405008,
++                45.32596743563991
++              ],
++              [
++                33.04296090827762,
++                45.2853982930032
++              ],
++              [
++                33.05274355585479,
++                45.28154273654923
++              ],
++              [
++                33.06850284417635,
++                45.27703461892352
++              ],
++              [
++                33.07825272648239,
++                45.272210805127315
++              ],
++              [
++                33.089426322403455,
++                45.25656353201492
++              ],
++              [
++                33.09897492343546,
++                45.247820101667884
++              ],
++              [
++                33.12384611720435,
++                45.238235755071685
++              ],
++              [
++                33.15767197859745,
++                45.20755227709648
++              ],
++              [
++                33.172959979330074,
++                45.19681657531794
++              ],
++              [
++                33.21837666514142,
++                45.187878368659824
++              ],
++              [
++                33.24017433636709,
++                45.180191106261134
++              ],
++              [
++                33.248571989896675,
++                45.16588271012458
++              ],
++              [
++                33.259649216030766,
++                45.155918961282026
++              ],
++              [
++                33.28309785485047,
++                45.16064860772312
++              ],
++              [
++                33.31767999550894,
++                45.17535522412791
++              ],
++              [
++                33.35458473323109,
++                45.18598673360148
++              ],
++              [
++                33.39725661527919,
++                45.18973663076909
++              ],
++              [
++                33.41344561756824,
++                45.18490731877088
++              ],
++              [
++                33.468468576977216,
++                45.149132412229676
++              ],
++              [
++                33.537128652906205,
++                45.11719769268973
++              ],
++              [
++                33.56161328289443,
++                45.094099022711475
++              ],
++              [
++                33.57837628774928,
++                45.053145935448015
++              ],
++              [
++                33.58247744978442,
++                45.027377243150454
++              ],
++              [
++                33.5851414316958,
++                45.01816461606674
++              ],
++              [
++                33.6031021265521,
++                44.993103583251695
++              ],
++              [
++                33.605922209331794,
++                44.986905272229734
++              ],
++              [
++                33.60843524291815,
++                44.97039962759274
++              ],
++              [
++                33.61943161357851,
++                44.93184946652454
++              ],
++              [
++                33.619484500808824,
++                44.90819321920554
++              ],
++              [
++                33.61549738593425,
++                44.88894092276257
++              ],
++              [
++                33.608561183117274,
++                44.871288478948514
++              ],
++              [
++                33.59889474705494,
++                44.859790298912856
++              ],
++              [
++                33.55904244709464,
++                44.850057575124595
++              ],
++              [
++                33.54667558363471,
++                44.83724531175508
++              ],
++              [
++                33.53701832136994,
++                44.81871953508235
++              ],
++              [
++                33.5303157846202,
++                44.798338017069625
++              ],
++              [
++                33.5249116915937,
++                44.78918633101301
++              ],
++              [
++                33.51669091675143,
++                44.784809980590666
++              ],
++              [
++                33.524785531609865,
++                44.77183212449111
++              ],
++              [
++                33.5302902535075,
++                44.75724515985675
++              ],
++              [
++                33.53710734694323,
++                44.73034290771247
++              ],
++              [
++                33.54650992495621,
++                44.70989226909535
++              ],
++              [
++                33.5481286806762,
++                44.699106546699085
++              ],
++              [
++                33.543995566510915,
++                44.68230506537358
++              ],
++              [
++                33.53580273994743,
++                44.6726082589706
++              ],
++              [
++                33.52337411931097,
++                44.661863083605255
++              ],
++              [
++                33.515320778874354,
++                44.6491266698327
++              ],
++              [
++                33.516377841582795,
++                44.63464990118433
++              ],
++              [
++                33.52466971637648,
++                44.62863961572572
++              ],
++              [
++                33.557474298027785,
++                44.62473000923737
++              ],
++              [
++                33.5710648827386,
++                44.620853511273225
++              ],
++              [
++                33.55105839203679,
++                44.61506440493406
++              ],
++              [
++                33.499905706797676,
++                44.61452599304897
++              ],
++              [
++                33.48451102966331,
++                44.60992438254493
++              ],
++              [
++                33.47658499621011,
++                44.60714391514574
++              ],
++              [
++                33.46705078205747,
++                44.60616254193252
++              ],
++              [
++                33.44476599234898,
++                44.607062134677875
++              ],
++              [
++                33.4353466482458,
++                44.60509936890821
++              ],
++              [
++                33.413591053005575,
++                44.593500212748125
++              ],
++              [
++                33.40543527945235,
++                44.59055535193136
++              ],
++              [
++                33.37510958624222,
++                44.58564691897425
++              ],
++              [
++                33.37074452434078,
++                44.58851022190515
++              ],
++              [
++                33.372237834990756,
++                44.576810695127364
++              ],
++              [
++                33.37913003799301,
++                44.56412673079859
++              ],
++              [
++                33.48759131590526,
++                44.51024086451031
++              ],
++              [
++                33.50011215135888,
++                44.50041002882833
++              ],
++              [
++                33.517917009115365,
++                44.49074142372788
++              ],
++              [
++                33.53836387802215,
++                44.49164280212756
++              ],
++              [
++                33.56041892763031,
++                44.4966411022441
++              ],
++              [
++                33.57822378538677,
++                44.497542389459795
++              ],
++              [
++                33.59062975079095,
++                44.48975808594983
++              ],
++              [
++                33.619577003408466,
++                44.46229988129974
++              ],
++              [
++                33.62635433636015,
++                44.45336293328907
++              ],
++              [
++                33.63175322871038,
++                44.434828756313124
++              ],
++              [
++                33.645537634715026,
++                44.42498521035591
++              ],
++              [
++                33.721007257593925,
++                44.39946630464436
++              ],
++              [
++                33.74168386660085,
++                44.39560878121904
++              ],
++              [
++                33.80727466517129,
++                44.39454176175843
++              ],
++              [
++                33.81841706002561,
++                44.39552670349164
++              ],
++              [
++                33.83909366903248,
++                44.40143600575672
++              ],
++              [
++                33.85149963444792,
++                44.40143600575945
++              ],
++              [
++                33.91467816197718,
++                44.38387049706651
++              ],
++              [
++                33.938111652185,
++                44.38083293528811
++              ],
++              [
++                33.957065210440874,
++                44.38272116790142
++              ],
++              [
++                34.06614966692763,
++                44.42019923628979
++              ],
++              [
++                34.088893936836286,
++                44.42200415824283
++              ],
++              [
++                34.10279321289039,
++                44.42487551014821
++              ],
++              [
++                34.135933345669,
++                44.44163597968952
++              ],
++              [
++                34.14696087047267,
++                44.44959070749778
++              ],
++              [
++                34.16058918507403,
++                44.466287285335795
++              ],
++              [
++                34.170123399227776,
++                44.48186111741296
++              ],
++              [
++                34.182759104731986,
++                44.49267838558103
++              ],
++              [
++                34.22923417224524,
++                44.49949719774551
++              ],
++              [
++                34.24301857824986,
++                44.50744404277697
++              ],
++              [
++                34.263903954150294,
++                44.53186886058606
++              ],
++              [
++                34.26631622520165,
++                44.53555362837611
++              ],
++              [
++                34.26631622520165,
++                44.54153064468656
++              ],
++              [
++                34.27033667695244,
++                44.545378535987936
++              ],
++              [
++                34.2757355693048,
++                44.54644280144541
++              ],
++              [
++                34.285384653508004,
++                44.54562413743594
++              ],
++              [
++                34.299973149863405,
++                44.54554227040174
++              ],
++              [
++                34.32260254971496,
++                44.543577427039224
++              ],
++              [
++                34.3308731933177,
++                44.54546040325087
++              ],
++              [
++                34.340292537420794,
++                44.55798473830754
++              ],
++              [
++                34.38042135640006,
++                44.631830317636684
++              ],
++              [
++                34.41495238900856,
++                44.673669777529994
++              ],
++              [
++                34.424193090575585,
++                44.68239452736094
++              ],
++              [
++                34.42959198292681,
++                44.68884644523774
++              ],
++              [
++                34.469399167794535,
++                44.730194532749294
++              ],
++              [
++                34.47376422969597,
++                44.73011292571252
++              ],
++              [
++                34.47376422969597,
++                44.72635887754967
++              ],
++              [
++                34.475142670296464,
++                44.723502373339585
++              ],
++              [
++                34.499724861011515,
++                44.74292382044041
++              ],
++              [
++                34.532800295801195,
++                44.752620844929055
++              ],
++              [
++                34.61217550038418,
++                44.76534519537847
++              ],
++              [
++                34.65065696715081,
++                44.777088262503725
++              ],
++              [
++                34.72084256772871,
++                44.811080759265764
++              ],
++              [
++                34.756796893391225,
++                44.82094054159748
++              ],
++              [
++                34.82646979041766,
++                44.81208604604609
++              ],
++              [
++                34.84289620758207,
++                44.816893835303176
++              ],
++              [
++                34.856910353686715,
++                44.82373813182468
++              ],
++              [
++                34.889648317948144,
++                44.817871641692506
++              ],
++              [
++                34.90733830566026,
++                44.820886440346584
++              ],
++              [
++                34.922960632465504,
++                44.83050015059965
++              ],
++              [
++                34.92950822531711,
++                44.83652826953224
++              ],
++              [
++                34.94179932067178,
++                44.84019370922482
++              ],
++              [
++                34.95282684547897,
++                44.841415470643284
++              ],
++              [
++                34.98567967978991,
++                44.840275160795755
++              ],
++              [
++                35.0053224583441,
++                44.83538786296728
++              ],
++              [
++                35.017958163849414,
++                44.82219008824552
++              ],
++              [
++                35.02703289780189,
++                44.80890779582285
++              ],
++              [
++                35.037933245998005,
++                44.79869792240089
++              ],
++              [
++                35.08073333784134,
++                44.793525442788905
++              ],
++              [
++                35.1080207326404,
++                44.824553365795765
++              ],
++              [
++                35.130368105574235,
++                44.86879838545747
++              ],
++              [
++                35.15485200090768,
++                44.90071251697748
++              ],
++              [
++                35.17111229780758,
++                44.90746386008772
++              ],
++              [
++                35.21522068940149,
++                44.91421441031795
++              ],
++              [
++                35.233163085981715,
++                44.925728224907715
++              ],
++              [
++                35.25636688416236,
++                44.95896657181197
++              ],
++              [
++                35.27300098099195,
++                44.96690119386028
++              ],
++              [
++                35.29748487632534,
++                44.95605693543271
++              ],
++              [
++                35.30496087491386,
++                44.96121482614441
++              ],
++              [
++                35.315240372954605,
++                44.965711070514175
++              ],
++              [
++                35.31935217217088,
++                44.96941359539801
++              ],
++              [
++                35.36757236298112,
++                44.94362319076086
++              ],
++              [
++                35.36103086422793,
++                44.97364475976596
++              ],
++              [
++                35.362152264014156,
++                44.98593980935419
++              ],
++              [
++                35.374674561627444,
++                44.997835734117416
++              ],
++              [
++                35.389439658813274,
++                45.00180049366759
++              ],
++              [
++                35.42270785247763,
++                45.00087540764923
++              ],
++              [
++                35.43504325012745,
++                45.00470780964241
++              ],
++              [
++                35.43504325012745,
++                45.011446929213974
++              ],
++              [
++                35.40631957913584,
++                45.02015821022701
++              ],
++              [
++                35.40089948016896,
++                45.025046135473445
++              ],
++              [
++                35.39790908073891,
++                45.03482073400548
++              ],
++              [
++                35.40052568024015,
++                45.042216617888045
++              ],
++              [
++                35.40631957913584,
++                45.051328088783805
++              ],
++              [
++                35.40744097892215,
++                45.06294640963205
++              ],
++              [
++                35.41734667704213,
++                45.0708666385693
++              ],
++              [
++                35.469304867139925,
++                45.10068964922732
++              ],
++              [
++                35.5070260597534,
++                45.113341616151644
++              ],
++              [
++                35.54758335202416,
++                45.12019982412133
++              ],
++              [
++                35.59019654390909,
++                45.11993606213795
++              ],
++              [
++                35.63411803553862,
++                45.11439677872579
++              ],
++              [
++                35.70669729572677,
++                45.09480210570922
++              ],
++              [
++                35.771782422456766,
++                45.06572995732262
++              ],
++              [
++                35.78430472007,
++                45.057941041321754
++              ],
++              [
++                35.81250040352472,
++                45.031852200991295
++              ],
++              [
++                35.81941570220667,
++                45.021152336906454
++              ],
++              [
++                35.82763930064016,
++                44.99895365027004
++              ],
++              [
++                35.848198296721705,
++                44.99208088455586
++              ],
++              [
++                35.916977483614176,
++                45.00172895661731
++              ],
++              [
++                35.99360646900681,
++                44.997896355361604
++              ],
++              [
++                36.00893226608571,
++                45.00926125333629
++              ],
++              [
++                36.02539976723364,
++                45.03288661039673
++              ],
++              [
++                36.047827762958946,
++                45.048074065419456
++              ],
++              [
++                36.078666257082034,
++                45.03883000769565
++              ],
++              [
++                36.079137312377895,
++                45.046610970582435
++              ],
++              [
++                36.135020401727616,
++                45.02125162210126
++              ],
++              [
++                36.2241716847341,
++                45.00751061631556
++              ],
++              [
++                36.24398308095806,
++                45.011474706353084
++              ],
++              [
++                36.24828178013877,
++                45.01649549321965
++              ],
++              [
++                36.25332807917695,
++                45.03247980324494
++              ],
++              [
++                36.25743987839326,
++                45.03842324279259
++              ],
++              [
++                36.267158676549116,
++                45.043573724415154
++              ],
++              [
++                36.2783726744118,
++                45.04555455542638
++              ],
++              [
++                36.36740852558336,
++                45.04833265291825
++              ],
++              [
++                36.44029951169139,
++                45.06787222615526
++              ],
++              [
++                36.45375630913995,
++                45.07631970334319
++              ],
++              [
++                36.455251508854985,
++                45.09202341204062
++              ],
++              [
++                36.44142091149291,
++                45.10709638287736
++              ],
++              [
++                36.41432041665814,
++                45.12872568311289
++              ],
++              [
++                36.40852651776157,
++                45.149160473330085
++              ],
++              [
++                36.409997342308856,
++                45.171615955386955
++              ],
++              [
++                36.418312796420764,
++                45.23001671705953
++              ],
++              [
++                36.42672329481775,
++                45.25186253492981
++              ],
++              [
++                36.43756477765089,
++                45.27227491599612
++              ],
++              [
++                36.4497132753354,
++                45.28542626329343
++              ],
++              [
++                36.45905827355429,
++                45.28753019598713
++              ],
++              [
++                36.4814862692796,
++                45.28845064200263
++              ],
++              [
++                36.4909554290368,
++                45.29213135137758
++              ],
++              [
++                36.49637552800283,
++                45.300940007322055
++              ],
++              [
++                36.49394582846682,
++                45.305015191082816
++              ],
++              [
++                36.48871262946426,
++                45.30935296803605
++              ],
++              [
++                36.48460083024801,
++                45.315924724862185
++              ],
++              [
++                36.489647129296515,
++                45.336413860372005
++              ],
++              [
++                36.502169426909745,
++                45.34731734941451
++              ],
++              [
++                36.52104632331191,
++                45.35033842661815
++              ],
++              [
++                36.544281237819945,
++                45.34731734942025
++              ],
++              [
++                36.57455903204905,
++                45.33601971904315
++              ],
++              [
++                36.585399229982954,
++                45.333917585593355
++              ],
++              [
++                36.59810088537549,
++                45.334837278577254
++              ],
++              [
++                36.630808379142394,
++                45.34048649352954
++              ],
++              [
++                36.637536777859964,
++                45.3511265071989
++              ],
++              [
++                36.63099527910589,
++                45.3741073632589
++              ],
++              [
++                36.61359545390113,
++                45.40895280985421
++              ],
++              [
++                36.59845655678569,
++                45.421547717459106
++              ],
++              [
++                36.58331765967199,
++                45.42731944465129
++              ],
++              [
++                36.566309762912795,
++                45.42548305000767
++              ],
++              [
++                36.54836736633254,
++                45.41210180010589
++              ],
++              [
++                36.53285466928139,
++                45.4090840212946
++              ],
++              [
++                36.51565987255873,
++                45.41957994832251
++              ],
++              [
++                36.49117597722616,
++                45.44279525429408
++              ],
++              [
++                36.47043008117939,
++                45.4458112314303
++              ],
++              [
++                36.411182792482634,
++                45.43610707766504
++              ],
++              [
++                36.391371396258705,
++                45.43991025572652
++              ],
++              [
++                36.35959840231365,
++                45.45407156049933
++              ],
++              [
++                36.33960010612526,
++                45.45695583486963
++              ],
++              [
++                36.33025510790637,
++                45.454464879327446
++              ],
++              [
++                36.32053630976225,
++                45.44856480887407
++              ],
++              [
++                36.31156511147125,
++                45.4438443081136
++              ],
++              [
++                36.29885591389362,
++                45.442795254299995
++              ],
++              [
++                36.3072664122906,
++                45.46115087970253
++              ],
++              [
++                36.30016421364425,
++                45.47320989503609
++              ],
++              [
++                36.283717016779036,
++                45.476355300848866
++              ],
++              [
++                36.267082919949445,
++                45.46704963343626
++              ],
++              [
++                36.25213092279836,
++                45.46115087970253
++              ],
++              [
++                36.13681364478941,
++                45.46219959214511
++              ],
++              [
++                36.11700224855986,
++                45.45721803432335
++              ],
++              [
++                36.097003952371466,
++                45.441483909606006
++              ],
++              [
++                36.06952965760803,
++                45.43046741078453
++              ],
++              [
++                36.0655449627526,
++                45.42553028973455
++              ],
++              [
++                36.05134056545904,
++                45.39535242162091
++              ],
++              [
++                36.022557970944945,
++                45.368441166003805
++              ],
++              [
++                35.986486277818386,
++                45.362926059418186
++              ],
++              [
++                35.94723728529826,
++                45.372380198658874
++              ],
++              [
++                35.87220216002379,
++                45.404075760536614
++              ],
++              [
++                35.85388596351393,
++                45.413916621802144
++              ],
++              [
++                35.84715756479628,
++                45.426379251448395
++              ],
++              [
++                35.8524047739447,
++                45.44386497541683
++              ],
++              [
++                35.85950697259193,
++                45.45933624762881
++              ],
++              [
++                35.857824872912545,
++                45.469953901705
++              ],
++              [
++                35.83278027768503,
++                45.47087138287168
++              ],
++              [
++                35.8167068807486,
++                45.46392436820739
++              ],
++              [
++                35.80362388324218,
++                45.44963442058864
++              ],
++              [
++                35.79469305616038,
++                45.42980210462429
++              ],
++              [
++                35.791889556694684,
++                45.41209230278156
++              ],
++              [
++                35.772265060435046,
++                45.39214572935421
++              ],
++              [
++                35.767405661361295,
++                45.38873311015669
++              ],
++              [
++                35.75189296431793,
++                45.386632934388984
++              ],
++              [
++                35.7481549650407,
++                45.379938103368545
++              ],
++              [
++                35.746846665290036,
++                45.369960021421576
++              ],
++              [
++                35.74423006578874,
++                45.36076812520648
++              ],
++              [
++                35.71619507113218,
++                45.34040932557082
++              ],
++              [
++                35.69451467527287,
++                45.32989869277279
++              ],
++              [
++                35.51720627467216,
++                45.29506847418358
++              ],
++              [
++                35.48038698168983,
++                45.2979608697527
++              ],
++              [
++                35.33194061536096,
++                45.371562726652314
++              ],
++              [
++                35.04491375777232,
++                45.669545248704424
++              ],
++              [
++                35.00230056589345,
++                45.7290693869553
++              ],
++              [
++                34.70631294999043,
++                46.024929846739866
++              ],
++              [
++                34.35868883309806,
++                46.106725558140795
++              ],
++              [
++                34.00905273547181,
++                46.55925987559425
++              ]
++            ]
++          ]
++        }
++      }
++    }
++  },
++  "version": 8,
++  "metadata": {
++    "maptiler:copyright": "This style was generated on MapTiler Cloud. Usage is governed by the license terms in https://github.com/maplibre/demotiles/blob/gh-pages/LICENSE",
++    "openmaptiles:version": "3.x"
++  },
++  "projection": {
++    "type": "globe"
++  }
++}
