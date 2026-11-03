@@ -19,6 +19,22 @@ git_pure() {
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git "$@"
 }
 
+# read_lines NAME CMD...: CMD's output lines into the array NAME. macOS ships
+# bash 3.2, which has no mapfile; the release builds iOS there.
+read_lines() {
+    local __name="$1" __line
+    shift
+    eval "$__name=()"
+    while IFS= read -r __line; do
+        eval "$__name+=(\"\$__line\")"
+    done < <("$@")
+}
+
+# abspath DIR: an existing directory's absolute path (no GNU realpath on macOS).
+abspath() {
+    (cd "$1" && pwd -P)
+}
+
 die() {
     echo "error: $*" >&2
     exit 1

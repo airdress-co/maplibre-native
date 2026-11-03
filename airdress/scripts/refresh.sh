@@ -35,9 +35,9 @@ done
 
 [ -n "$base" ] || base="$(series_base)"
 globe_pr="$(series_value globe-pr || true)"
-mapfile -t names < <(series_names)
+read_lines names series_names
 base_id="$(base_commit "$repo" "$base")" || die "$repo has no $base"
-mapfile -t commits < <(git -C "$repo" rev-list --reverse "$base_id..HEAD")
+read_lines commits git -C "$repo" rev-list --reverse "$base_id..HEAD"
 
 for c in "${commits[@]}"; do
     subject="$(git -C "$repo" log -1 --format=%s "$c")"
@@ -56,7 +56,7 @@ next_number() {
     printf '%04d' $((n + 1))
 }
 
-for add in "${adds[@]}"; do
+for add in "${adds[@]+"${adds[@]}"}"; do
     group="${add%%/*}"
     topic="${add#*/}"
     case "$group" in infra|ours) ;; *) die "--add takes infra/TOPIC or ours/TOPIC, not $add" ;; esac
