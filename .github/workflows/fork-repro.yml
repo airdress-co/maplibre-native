@@ -108,8 +108,13 @@ jobs:
           # The globe flag exists only once the series' globe group is in.
           flag=""
           [ "$TREE" = upstream ] || flag="--//:globe=true"
-          bazel build //platform/ios:MapLibre.dynamic --//:renderer=metal $flag --compilation_mode=opt
+          # The release's flags (fork-release.yml), so this measures what ships.
+          bazel build --compilation_mode=opt --//:renderer=metal $flag \
+            --features=dead_strip,thin_lto --objc_enable_binary_stripping --apple_generate_dsym \
+            //platform/ios:MapLibre.dynamic --embed_label=maplibre_ios_"$(cat platform/ios/VERSION)"
           cp "$(bazel info --compilation_mode=opt bazel-bin)/platform/ios/MapLibre.dynamic.xcframework.zip" "$RUNNER_TEMP/"
+          chmod +w "$RUNNER_TEMP/MapLibre.dynamic.xcframework.zip"
+          zip -q "$RUNNER_TEMP/MapLibre.dynamic.xcframework.zip" LICENSE.md
           { echo "Xcode: $(xcodebuild -version | head -1)"; echo "Bazel: $(bazel --version)"; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
