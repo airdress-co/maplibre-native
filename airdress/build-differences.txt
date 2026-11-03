@@ -13,3 +13,13 @@
 */maven-metadata.xml.sha1
 */maven-metadata.xml.sha256
 */maven-metadata.xml.sha512
+
+# The linker's call stubs in the iOS MapLibre binary. With the globe series
+# the binary carries two GOT slots bound to libobjc/_objc_msgSend (0x71CCC8
+# and 0x71CCD0, dyld_info -fixups, identical in both builds), and which one
+# a stub loads varies between builds: the stubs' ldr immediates differ by
+# one slot, nothing else does. __text, __objc_selrefs, the fixups and every
+# other byte match. Measured by fork-repro on the series, 2026-11-03.
+# Blanked as sections, never the whole binary.
+MapLibre.xcframework/*/MapLibre.framework/MapLibre#__TEXT,__objc_stubs
+MapLibre.xcframework/*/MapLibre.framework/MapLibre#__TEXT,__stubs
