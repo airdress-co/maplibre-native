@@ -1,0 +1,3089 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Carmack <johncarmack@me.com>
+Date: Wed, 26 Aug 2026 18:22:36 +0000
+Subject: [PATCH] Globe 08/13, phase 8: symbols placed and collided on the
+ globe
+
+Imported from maplibre/maplibre-native#4533 at bec8a12440d0c8a3bd320f151e1b16de39285705,
+first-parent commits 3a21751929..3a21751929 (1).
+---
+ CMakeLists.txt                                |   1 +
+ bazel/core.bzl                                |   2 +
+ include/mln/renderer/layer_tweaker.hpp        |   4 +
+ include/mln/shaders/gl/prelude.hpp            |   4 +
+ include/mln/shaders/gl/symbol_icon.hpp        |  27 ++-
+ include/mln/shaders/gl/symbol_sdf.hpp         |  27 ++-
+ .../mln/shaders/gl/symbol_text_and_icon.hpp   |  27 ++-
+ include/mln/shaders/mtl/common.hpp            |  55 +++++
+ include/mln/shaders/mtl/symbol.hpp            | 112 +++++++--
+ include/mln/shaders/symbol_layer_ubo.hpp      |  10 +-
+ include/mln/shaders/vulkan/common.hpp         |   4 +
+ include/mln/shaders/vulkan/symbol.hpp         | 102 +++++++--
+ include/mln/shaders/webgpu/common.hpp         |   4 +
+ include/mln/shaders/webgpu/symbol.hpp         |  76 +++++--
+ shaders/_prelude.vertex.glsl                  |   4 +
+ shaders/manifest.json                         |   7 +
+ shaders/symbol_icon.vertex.glsl               |  27 ++-
+ shaders/symbol_sdf.vertex.glsl                |  27 ++-
+ shaders/symbol_text_and_icon.vertex.glsl      |  27 ++-
+ src/mln/layout/symbol_projection.cpp          | 181 ++++++++++-----
+ src/mln/layout/symbol_projection.hpp          |  60 ++++-
+ src/mln/map/mercator_projection.cpp           |  31 ++-
+ src/mln/map/mercator_projection.hpp           |   4 +
+ src/mln/map/projection_base.hpp               |  26 ++-
+ src/mln/map/tile_projector.hpp                |  40 ++++
+ src/mln/map/transform_state.hpp               |   1 +
+ .../map/vertical_perspective_projection.cpp   |  57 +++--
+ .../map/vertical_perspective_projection.hpp   |   6 +
+ src/mln/renderer/layer_tweaker.cpp            |   6 +
+ .../renderer/layers/render_symbol_layer.cpp   |  36 +--
+ .../renderer/layers/symbol_layer_tweaker.cpp  |  27 ++-
+ src/mln/renderer/render_layer.cpp             |  11 +
+ src/mln/renderer/render_layer.hpp             |   8 +
+ src/mln/renderer/render_tile.cpp              |   3 +-
+ src/mln/renderer/render_tile.hpp              |   3 +
+ src/mln/shaders/gl/shader_info.cpp            |   3 +
+ src/mln/text/collision_index.cpp              | 212 ++++++++++++++----
+ src/mln/text/collision_index.hpp              |  54 ++++-
+ src/mln/text/placement.cpp                    | 120 +++++-----
+ test/map/transform.test.cpp                   |  48 ++++
+ 40 files changed, 1196 insertions(+), 288 deletions(-)
+ create mode 100644 src/mln/map/tile_projector.hpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 50e4284bf3ab59679b0f346ce3f39719c75bb3d4..99364bc99b20c87a69a0f89647cb59b6836e43e3 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -577,6 +577,7 @@ list(APPEND SRC_FILES
+     ${PROJECT_SOURCE_DIR}/src/mln/map/mercator_projection.cpp
+     ${PROJECT_SOURCE_DIR}/src/mln/map/mercator_projection.hpp
+     ${PROJECT_SOURCE_DIR}/src/mln/map/projection_base.hpp
++    ${PROJECT_SOURCE_DIR}/src/mln/map/tile_projector.hpp
+     ${PROJECT_SOURCE_DIR}/src/mln/map/vertical_perspective_projection.cpp
+     ${PROJECT_SOURCE_DIR}/src/mln/map/vertical_perspective_projection.hpp
+     ${PROJECT_SOURCE_DIR}/src/mln/map/transform.cpp
+diff --git a/bazel/core.bzl b/bazel/core.bzl
+index f6a054379c9c13aa544b6a1dafdd0d45c187eb30..cbd1552ed4ebeba62b7d23bb9ded0e988b20549b 100644
+--- a/bazel/core.bzl
++++ b/bazel/core.bzl
+@@ -95,6 +95,7 @@ MLN_GENERATED_OPENGL_SHADER_HEADERS = [
+     "include/mln/shaders/gl/fill_extrusion_instanced.hpp",
+     "include/mln/shaders/gl/fill_extrusion_pattern.hpp",
+     "include/mln/shaders/gl/fill_extrusion_pattern_instanced.hpp",
++    "include/mln/shaders/gl/globe_depth.hpp",
+     "include/mln/shaders/gl/heatmap.hpp",
+     "include/mln/shaders/gl/heatmap_texture.hpp",
+     "include/mln/shaders/gl/hillshade_prepare.hpp",
+@@ -197,6 +198,7 @@ MLN_CORE_SOURCE = [
+     "src/mln/map/mercator_projection.cpp",
+     "src/mln/map/mercator_projection.hpp",
+     "src/mln/map/projection_base.hpp",
++    "src/mln/map/tile_projector.hpp",
+     "src/mln/map/vertical_perspective_projection.cpp",
+     "src/mln/map/vertical_perspective_projection.hpp",
+     "src/mln/map/transform.cpp",
+diff --git a/include/mln/renderer/layer_tweaker.hpp b/include/mln/renderer/layer_tweaker.hpp
+index 36a08bc86df679c4a822091cf02bae889c25c6b5..cb09cbf8a547e293bc83006d9114401c636da8fc 100644
+--- a/include/mln/renderer/layer_tweaker.hpp
++++ b/include/mln/renderer/layer_tweaker.hpp
+@@ -90,6 +90,10 @@ public:
+ 
+     static shaders::ProjectionUBO toProjectionUBO(const ProjectionData&);
+ 
++    /// Radians per pixel on the sphere for a tile; GL JS `globeExtrudeScale`. `latitudeScale` is the cosine of the
++    /// center latitude on the globe and 1 on Mercator.
++    static float globeExtrudeScale(const UnwrappedTileID&, float zoom, double latitudeScale);
++
+ protected:
+     /// Determine whether this tweaker should apply to the given drawable
+     bool checkTweakDrawable(const gfx::Drawable&) const;
+diff --git a/include/mln/shaders/gl/prelude.hpp b/include/mln/shaders/gl/prelude.hpp
+index 70cb7c73f4be3e1d08e1d6335f0cebf909e0bcda..f5ee561506d34072597d58598dccf478a46cf2c8 100644
+--- a/include/mln/shaders/gl/prelude.hpp
++++ b/include/mln/shaders/gl/prelude.hpp
+@@ -98,6 +98,10 @@ layout (std140) uniform ProjectionUBO {
+ vec4 projectTile(vec2 pos) {
+     return u_projection_matrix * vec4(pos, 0.0, 1.0);
+ }
++
++vec4 projectTileWithElevation(vec2 pos, float elevation) {
++    return u_projection_matrix * vec4(pos, elevation, 1.0);
++}
+ )";
+     static constexpr const char* fragment = R"(#ifdef GL_ES
+ precision mediump float;
+diff --git a/include/mln/shaders/gl/symbol_icon.hpp b/include/mln/shaders/gl/symbol_icon.hpp
+index 194c2003aae0b569b347ab0dc840ec1b102b2772..ab65b25381365253cbbc6109e093b29abd33f7ff 100644
+--- a/include/mln/shaders/gl/symbol_icon.hpp
++++ b/include/mln/shaders/gl/symbol_icon.hpp
+@@ -50,6 +50,13 @@ layout (std140) uniform SymbolDrawableUBO {
+     highp float u_opacity_t;
+     highp float u_halo_width_t;
+     highp float u_halo_blur_t;
++
++    bool u_is_along_line;
++    bool u_is_variable_anchor;
++    highp float u_pitched_scale;
++    highp vec2 u_translation;
++    highp float u_pad1;
++    highp float u_pad2;
+ };
+ 
+ layout (std140) uniform SymbolEvaluatedPropsUBO {
+@@ -105,7 +112,8 @@ lowp float opacity = u_opacity;
+         size = u_size;
+     }
+ 
+-    vec4 projectedPoint = u_matrix * vec4(a_pos, 0, 1);
++    vec2 translated_a_pos = a_pos + u_translation;
++    vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0);
+     highp float camera_to_anchor_distance = projectedPoint.w;
+     // See comments in symbol_sdf.vertex
+     highp float distance_ratio = u_pitch_with_map ?
+@@ -125,7 +133,7 @@ lowp float opacity = u_opacity;
+     highp float symbol_rotation = 0.0;
+     if (u_rotate_symbol) {
+         // See comments in symbol_sdf.vertex
+-        vec4 offsetProjectedPoint = u_matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0);
+ 
+         vec2 a = projectedPoint.xy / projectedPoint.w;
+         vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -137,8 +145,19 @@ lowp float opacity = u_opacity;
+     highp float angle_cos = cos(segment_angle + symbol_rotation);
+     mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    vec4 projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy, 0.0, 1.0);
+-    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * max(a_minFontScale, fontScale) + a_pxoffset / 16.0), 0.0, 1.0);
++    vec4 projected_pos;
++    if (u_is_along_line || u_is_variable_anchor) {
++        projected_pos = vec4(a_projected_pos.xy, 0.0, 1.0);
++    } else if (u_pitch_with_map) {
++        projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy + u_translation, 0.0, 1.0);
++    } else {
++        projected_pos = u_label_plane_matrix * projectTileWithElevation(a_projected_pos.xy + u_translation, 0.0);
++    }
++    float z = float(u_pitch_with_map) * projected_pos.z / projected_pos.w;
++    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * max(a_minFontScale, fontScale) + a_pxoffset / 16.0), z, 1.0);
++    if (u_pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z);
++    }
+ 
+     v_tex = a_tex / u_texsize;
+     vec2 fade_opacity = unpack_opacity(a_fade_opacity);
+diff --git a/include/mln/shaders/gl/symbol_sdf.hpp b/include/mln/shaders/gl/symbol_sdf.hpp
+index 0e43733ea49f94cf660d5d78cc8e54c4873e2258..814d64ab8a164f774c841310e00ccc471e0de627 100644
+--- a/include/mln/shaders/gl/symbol_sdf.hpp
++++ b/include/mln/shaders/gl/symbol_sdf.hpp
+@@ -58,6 +58,13 @@ layout (std140) uniform SymbolDrawableUBO {
+     highp float u_opacity_t;
+     highp float u_halo_width_t;
+     highp float u_halo_blur_t;
++
++    bool u_is_along_line;
++    bool u_is_variable_anchor;
++    highp float u_pitched_scale;
++    highp vec2 u_translation;
++    highp float u_pad1;
++    highp float u_pad2;
+ };
+ 
+ layout (std140) uniform SymbolEvaluatedPropsUBO {
+@@ -152,7 +159,8 @@ lowp float halo_blur = u_halo_blur;
+         size = u_size;
+     }
+ 
+-    vec4 projectedPoint = u_matrix * vec4(a_pos, 0, 1);
++    vec2 translated_a_pos = a_pos + u_translation;
++    vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0);
+     highp float camera_to_anchor_distance = projectedPoint.w;
+     // If the label is pitched with the map, layout is done in pitched space,
+     // which makes labels in the distance smaller relative to viewport space.
+@@ -179,7 +187,7 @@ lowp float halo_blur = u_halo_blur;
+         // Point labels with 'rotation-alignment: map' are horizontal with respect to tile units
+         // To figure out that angle in projected space, we draw a short horizontal line in tile
+         // space, project it, and measure its angle in projected space.
+-        vec4 offsetProjectedPoint = u_matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0);
+ 
+         vec2 a = projectedPoint.xy / projectedPoint.w;
+         vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -191,8 +199,19 @@ lowp float halo_blur = u_halo_blur;
+     highp float angle_cos = cos(segment_angle + symbol_rotation);
+     mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    vec4 projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy, 0.0, 1.0);
+-    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale + a_pxoffset), 0.0, 1.0);
++    vec4 projected_pos;
++    if (u_is_along_line || u_is_variable_anchor) {
++        projected_pos = vec4(a_projected_pos.xy, 0.0, 1.0);
++    } else if (u_pitch_with_map) {
++        projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy + u_translation, 0.0, 1.0);
++    } else {
++        projected_pos = u_label_plane_matrix * projectTileWithElevation(a_projected_pos.xy + u_translation, 0.0);
++    }
++    float z = float(u_pitch_with_map) * projected_pos.z / projected_pos.w;
++    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale + a_pxoffset), z, 1.0);
++    if (u_pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z);
++    }
+     float gamma_scale = gl_Position.w;
+ 
+     vec2 fade_opacity = unpack_opacity(a_fade_opacity);
+diff --git a/include/mln/shaders/gl/symbol_text_and_icon.hpp b/include/mln/shaders/gl/symbol_text_and_icon.hpp
+index 27ceb07fc43732c8e7ed27dd0c277c580b18eeb3..ba70871933eab413a1c7e0bf79d1fee5ad315c54 100644
+--- a/include/mln/shaders/gl/symbol_text_and_icon.hpp
++++ b/include/mln/shaders/gl/symbol_text_and_icon.hpp
+@@ -57,6 +57,13 @@ layout (std140) uniform SymbolDrawableUBO {
+     highp float u_opacity_t;
+     highp float u_halo_width_t;
+     highp float u_halo_blur_t;
++
++    bool u_is_along_line;
++    bool u_is_variable_anchor;
++    highp float u_pitched_scale;
++    highp vec2 u_translation;
++    highp float u_pad1;
++    highp float u_pad2;
+ };
+ 
+ layout (std140) uniform SymbolEvaluatedPropsUBO {
+@@ -151,7 +158,8 @@ lowp float halo_blur = u_halo_blur;
+         size = u_size;
+     }
+ 
+-    vec4 projectedPoint = u_matrix * vec4(a_pos, 0, 1);
++    vec2 translated_a_pos = a_pos + u_translation;
++    vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0);
+     highp float camera_to_anchor_distance = projectedPoint.w;
+     // If the label is pitched with the map, layout is done in pitched space,
+     // which makes labels in the distance smaller relative to viewport space.
+@@ -178,7 +186,7 @@ lowp float halo_blur = u_halo_blur;
+         // Point labels with 'rotation-alignment: map' are horizontal with respect to tile units
+         // To figure out that angle in projected space, we draw a short horizontal line in tile
+         // space, project it, and measure its angle in projected space.
+-        vec4 offsetProjectedPoint = u_matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0);
+ 
+         vec2 a = projectedPoint.xy / projectedPoint.w;
+         vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -190,8 +198,19 @@ lowp float halo_blur = u_halo_blur;
+     highp float angle_cos = cos(segment_angle + symbol_rotation);
+     mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    vec4 projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy, 0.0, 1.0);
+-    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale), 0.0, 1.0);
++    vec4 projected_pos;
++    if (u_is_along_line || u_is_variable_anchor) {
++        projected_pos = vec4(a_projected_pos.xy, 0.0, 1.0);
++    } else if (u_pitch_with_map) {
++        projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy + u_translation, 0.0, 1.0);
++    } else {
++        projected_pos = u_label_plane_matrix * projectTileWithElevation(a_projected_pos.xy + u_translation, 0.0);
++    }
++    float z = float(u_pitch_with_map) * projected_pos.z / projected_pos.w;
++    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale), z, 1.0);
++    if (u_pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z);
++    }
+     float gamma_scale = gl_Position.w;
+ 
+     vec2 fade_opacity = unpack_opacity(a_fade_opacity);
+diff --git a/include/mln/shaders/mtl/common.hpp b/include/mln/shaders/mtl/common.hpp
+index 7bc5c2d43f3c024902a87b26f14aadf25c802ee8..7caca456419e73078847cdf6f8a34c3590892fee 100644
+--- a/include/mln/shaders/mtl/common.hpp
++++ b/include/mln/shaders/mtl/common.hpp
+@@ -266,6 +266,30 @@ inline float3 projectToSphere(float2 translatedPos, float2 rawPos, device const
+     return pos;
+ }
+ 
++inline float3 globeRotateVector(float3 vec, float2 angles) {
++    float3 axisRight = float3(vec.z, 0.0, -vec.x);
++    float3 axisUp = cross(axisRight, vec);
++    axisRight = normalize(axisRight);
++    axisUp = normalize(axisUp);
++    const float2 t = tan(angles);
++    return normalize(vec + axisRight * t.x + axisUp * t.y);
++}
++
++// cos(latitude) at a tile Y, from the same exp() form as projectToSphere.
++inline float circumferenceRatioAtTileY(float tileY, device const ProjectionUBO& projection) {
++    const float mercator_pos_y = projection.tile_mercator_coords.y + projection.tile_mercator_coords.w * tileY;
++    const float t = exp(M_PI_F - (mercator_pos_y * M_PI_F * 2.0));
++    return (2.0 * t) / (t * t + 1.0);
++}
++
++inline float projectLineThickness(float tileY, device const ProjectionUBO& projection) {
++    const float thickness = 1.0 / circumferenceRatioAtTileY(tileY, projection);
++    if (projection.projection_transition < 0.999) {
++        return mix(1.0, thickness, projection.projection_transition);
++    }
++    return thickness;
++}
++
+ inline float globeComputeClippingZ(float3 spherePos, device const ProjectionUBO& projection) {
+     return 1.0 - (dot(spherePos, projection.clipping_plane.xyz) + projection.clipping_plane.w);
+ }
+@@ -295,10 +319,29 @@ inline float4 interpolateProjection(float2 posInTile, float3 spherePos, float el
+     return result;
+ }
+ 
++// Keeps the matrix Z, for geometry that needs the depth buffer.
++inline float4 interpolateProjectionFor3D(float2 posInTile, float3 spherePos, float elevation, device const ProjectionUBO& projection) {
++    const float3 elevatedPos = spherePos * (1.0 + elevation / GLOBE_RADIUS);
++    const float4 globePosition = projection.matrix * float4(elevatedPos, 1.0);
++    if (projection.projection_transition > 0.999) {
++        return globePosition;
++    }
++    const float4 fallbackPosition = projection.fallback_matrix * float4(posInTile, elevation, 1.0);
++    return mix(fallbackPosition, globePosition, projection.projection_transition);
++}
++
+ inline float4 projectTile(float2 pos, device const ProjectionUBO& projection) {
+     return interpolateProjection(pos, projectToSphere(pos, float2(0.0, 0.0), projection), 0.0, projection);
+ }
+ 
++inline float4 projectTileWithElevation(float2 pos, float elevation, device const ProjectionUBO& projection) {
++    return interpolateProjection(pos, projectToSphere(pos, float2(0.0, 0.0), projection), elevation, projection);
++}
++
++inline float4 projectTileFor3D(float2 pos, float elevation, device const ProjectionUBO& projection) {
++    return interpolateProjectionFor3D(pos, projectToSphere(pos, pos, projection), elevation, projection);
++}
++
+ // The variant for geometry that can carry pole vertices; rawPos is the untranslated position.
+ inline float4 projectTile(float2 pos, float2 rawPos, device const ProjectionUBO& projection) {
+     return interpolateProjection(pos, projectToSphere(pos, rawPos, projection), 0.0, projection);
+@@ -319,6 +362,18 @@ inline float4 projectTile(float2 pos, float2 rawPos, device const ProjectionUBO&
+     return result;
+ }
+ 
++inline float4 projectTileWithElevation(float2 pos, float elevation, device const ProjectionUBO& projection) {
++    return projection.matrix * float4(pos, elevation, 1.0);
++}
++
++inline float4 projectTileFor3D(float2 pos, float elevation, device const ProjectionUBO& projection) {
++    return projection.matrix * float4(pos, elevation, 1.0);
++}
++
++inline float projectLineThickness(float, device const ProjectionUBO&) {
++    return 1.0;
++}
++
+ #endif
+ 
+ enum {
+diff --git a/include/mln/shaders/mtl/symbol.hpp b/include/mln/shaders/mtl/symbol.hpp
+index 2cd34cdda16ffa57765eea8687f0f5c76c3fbd21..a38cd07355ce977191725d295a3a3c6447e26e5e 100644
+--- a/include/mln/shaders/mtl/symbol.hpp
++++ b/include/mln/shaders/mtl/symbol.hpp
+@@ -40,9 +40,15 @@ struct alignas(16) SymbolDrawableUBO {
+     /* 248 */ float opacity_t;
+     /* 252 */ float halo_width_t;
+     /* 256 */ float halo_blur_t;
+-    /* 260 */
++    /* 260 */ /*bool*/ int is_along_line;
++    /* 264 */ /*bool*/ int is_variable_anchor;
++    /* 268 */ float pitched_scale;
++    /* 272 */ float2 translation;
++    /* 280 */ float pad1;
++    /* 284 */ float pad2;
++    /* 288 */
+ };
+-static_assert(sizeof(SymbolDrawableUBO) == 17 * 16, "wrong size");
++static_assert(sizeof(SymbolDrawableUBO) == 18 * 16, "wrong size");
+ 
+ struct alignas(16) SymbolTilePropsUBO {
+     /*  0 */ /*bool*/ int is_text;
+@@ -136,6 +142,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+                                 device const GlobalPaintParamsUBO& paintParams [[buffer(idGlobalPaintParamsUBO)]],
+                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
+                                 device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]],
++                                device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]],
+                                 uint instanceID [[ instance_id ]],
+                                 device const SymbolInstance* symbolInstances [[buffer(symbolUBOCount + 2)]],
+                                 device const DynamicInstance* dynamicInstances [[buffer(symbolUBOCount + 3)]],
+@@ -149,6 +156,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+ #endif
+ 
+     device const SymbolDrawableUBO& drawable = drawableVector[uboIndex];
++    device const ProjectionUBO& projection = projectionVector[uboIndex];
+     device const SymbolInstance& symbol = symbolInstances[instance];
+     device const DynamicInstance& dynamic = dynamicInstances[instance];
+     device const OpacityInstance& opacity = opacityInstances[instance];
+@@ -195,7 +203,8 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+         size = drawable.size;
+     }
+ 
+-    const float4 projectedPoint = drawable.matrix * float4(a_pos, 0, 1);
++    const float2 translated_a_pos = a_pos + drawable.translation;
++    const float4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     const float camera_to_anchor_distance = projectedPoint.w;
+     // See comments in symbol_sdf.vertex
+     const float distance_ratio = drawable.pitch_with_map ?
+@@ -215,7 +224,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+     float symbol_rotation = 0.0;
+     if (drawable.rotate_symbol) {
+         // See comments in symbol_sdf.vertex
+-        const float4 offsetProjectedPoint = drawable.matrix * float4(a_pos + float2(1, 0), 0, 1);
++        const float4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + float2(1, 0), 0.0, projection);
+ 
+         const float2 a = projectedPoint.xy / projectedPoint.w;
+         const float2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -226,10 +235,31 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+     const float angle_cos = cos(segment_angle + symbol_rotation);
+     const float2x2 rotation_matrix = float2x2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    const float4 projected_pos = drawable.label_plane_matrix * float4(dynamic.projected_pos[0], dynamic.projected_pos[1], 0.0, 1.0);
+-    const float2 pos0 = projected_pos.xy / projected_pos.w;
++    const float2 projected_pos_xy = float2(dynamic.projected_pos[0], dynamic.projected_pos[1]);
++    float4 projected_pos;
++    if (drawable.is_along_line || drawable.is_variable_anchor) {
++        projected_pos = float4(projected_pos_xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map) {
++        projected_pos = drawable.label_plane_matrix * float4(projected_pos_xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(projected_pos_xy + drawable.translation, 0.0, projection);
++    }
++
++    const float z = float(drawable.pitch_with_map) * projected_pos.z / projected_pos.w;
++
++    float projectionScaling = 1.0;
++#if defined(PROJECTION_GLOBE)
++    if (drawable.pitch_with_map) {
++        const float anchor_pos_tile_y = (drawable.coord_matrix * float4(projected_pos.xy / projected_pos.w, z, 1.0)).y;
++        projectionScaling = mix(projectionScaling, 1.0 / circumferenceRatioAtTileY(anchor_pos_tile_y, projection) * drawable.pitched_scale, projection.projection_transition);
++    }
++#endif
++
+     const float2 posOffset = a_offset * max(a_minFontScale, fontScale) / 32.0 + a_pxoffset / 16.0;
+-    const float4 position = drawable.coord_matrix * float4(pos0 + rotation_matrix * posOffset, 0.0, 1.0);
++    float4 position = drawable.coord_matrix * float4(projected_pos.xy / projected_pos.w + rotation_matrix * posOffset * projectionScaling, z, 1.0);
++    if (drawable.pitch_with_map) {
++        position = projectTileWithElevation(position.xy, position.z, projection);
++    }
+ 
+     return {
+         .position     = position,
+@@ -350,6 +380,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+                                 device const GlobalPaintParamsUBO& paintParams [[buffer(idGlobalPaintParamsUBO)]],
+                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
+                                 device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]],
++                                device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]],
+                                 uint instanceID [[ instance_id ]],
+                                 device const SymbolInstance* symbolInstances [[buffer(symbolUBOCount + 2)]],
+                                 device const DynamicInstance* dynamicInstances [[buffer(symbolUBOCount + 3)]],
+@@ -363,6 +394,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+ #endif
+ 
+     device const SymbolDrawableUBO& drawable = drawableVector[uboIndex];
++    device const ProjectionUBO& projection = projectionVector[uboIndex];
+     device const SymbolInstance& symbol = symbolInstances[instance];
+     device const DynamicInstance& dynamic = dynamicInstances[instance];
+     device const OpacityInstance& opacity = opacityInstances[instance];
+@@ -402,7 +434,8 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+         size = drawable.size;
+     }
+ 
+-    const float4 projectedPoint = drawable.matrix * float4(a_pos, 0, 1);
++    const float2 translated_a_pos = a_pos + drawable.translation;
++    const float4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     const float camera_to_anchor_distance = projectedPoint.w;
+     // If the label is pitched with the map, layout is done in pitched space,
+     // which makes labels in the distance smaller relative to viewport space.
+@@ -429,7 +462,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+         // Point labels with 'rotation-alignment: map' are horizontal with respect to tile units
+         // To figure out that angle in projected space, we draw a short horizontal line in tile
+         // space, project it, and measure its angle in projected space.
+-        const float4 offsetProjectedPoint = drawable.matrix * float4(a_pos + float2(1, 0), 0, 1);
++        const float4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + float2(1, 0), 0.0, projection);
+ 
+         const float2 a = projectedPoint.xy / projectedPoint.w;
+         const float2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -440,10 +473,31 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+     const float angle_sin = sin(segment_angle + symbol_rotation);
+     const float angle_cos = cos(segment_angle + symbol_rotation);
+     const auto rotation_matrix = float2x2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+-    const float4 projected_pos = drawable.label_plane_matrix * float4(dynamic.projected_pos[0], dynamic.projected_pos[1], 0.0, 1.0);
++    const float2 projected_pos_xy = float2(dynamic.projected_pos[0], dynamic.projected_pos[1]);
++    float4 projected_pos;
++    if (drawable.is_along_line || drawable.is_variable_anchor) {
++        projected_pos = float4(projected_pos_xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map) {
++        projected_pos = drawable.label_plane_matrix * float4(projected_pos_xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(projected_pos_xy + drawable.translation, 0.0, projection);
++    }
++
++    const float z = float(drawable.pitch_with_map) * projected_pos.z / projected_pos.w;
++
++    float projectionScaling = 1.0;
++#if defined(PROJECTION_GLOBE)
++    if (drawable.pitch_with_map) {
++        const float anchor_pos_tile_y = (drawable.coord_matrix * float4(projected_pos.xy / projected_pos.w, z, 1.0)).y;
++        projectionScaling = mix(projectionScaling, 1.0 / circumferenceRatioAtTileY(anchor_pos_tile_y, projection) * drawable.pitched_scale, projection.projection_transition);
++    }
++#endif
++
+     const float2 pos_rot = a_offset / 32.0 * fontScale + a_pxoffset;
+-    const float2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
+-    const float4 position = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
++    float4 position = drawable.coord_matrix * float4(projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot * projectionScaling, z, 1.0);
++    if (drawable.pitch_with_map) {
++        position = projectTileWithElevation(position.xy, position.z, projection);
++    }
+ 
+     return {
+         .position     = position,
+@@ -622,6 +676,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+                                 device const GlobalPaintParamsUBO& paintParams [[buffer(idGlobalPaintParamsUBO)]],
+                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
+                                 device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]],
++                                device const ProjectionUBO* projectionVector [[buffer(idProjectionUBO)]],
+                                 uint instanceID [[ instance_id ]],
+                                 device const SymbolInstance* symbolInstances [[buffer(symbolUBOCount + 2)]],
+                                 device const DynamicInstance* dynamicInstances [[buffer(symbolUBOCount + 3)]],
+@@ -635,6 +690,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+ #endif
+ 
+     device const SymbolDrawableUBO& drawable = drawableVector[uboIndex];
++    device const ProjectionUBO& projection = projectionVector[uboIndex];
+     device const SymbolInstance& symbol = symbolInstances[instance];
+     device const DynamicInstance& dynamic = dynamicInstances[instance];
+     device const OpacityInstance& opacity = opacityInstances[instance];
+@@ -674,7 +730,8 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+         size = drawable.size;
+     }
+ 
+-    const float4 projectedPoint = drawable.matrix * float4(a_pos, 0, 1);
++    const float2 translated_a_pos = a_pos + drawable.translation;
++    const float4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     const float camera_to_anchor_distance = projectedPoint.w;
+     // If the label is pitched with the map, layout is done in pitched space,
+     // which makes labels in the distance smaller relative to viewport space.
+@@ -701,7 +758,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+         // Point labels with 'rotation-alignment: map' are horizontal with respect to tile units
+         // To figure out that angle in projected space, we draw a short horizontal line in tile
+         // space, project it, and measure its angle in projected space.
+-        const float4 offsetProjectedPoint = drawable.matrix * float4(a_pos + float2(1, 0), 0, 1);
++        const float4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + float2(1, 0), 0.0, projection);
+ 
+         const float2 a = projectedPoint.xy / projectedPoint.w;
+         const float2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -713,10 +770,31 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
+     const float angle_cos = cos(segment_angle + symbol_rotation);
+     const float2x2 rotation_matrix = float2x2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    const float4 projected_pos = drawable.label_plane_matrix * float4(dynamic.projected_pos[0], dynamic.projected_pos[1], 0.0, 1.0);
++    const float2 projected_pos_xy = float2(dynamic.projected_pos[0], dynamic.projected_pos[1]);
++    float4 projected_pos;
++    if (drawable.is_along_line || drawable.is_variable_anchor) {
++        projected_pos = float4(projected_pos_xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map) {
++        projected_pos = drawable.label_plane_matrix * float4(projected_pos_xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(projected_pos_xy + drawable.translation, 0.0, projection);
++    }
++
++    const float z = float(drawable.pitch_with_map) * projected_pos.z / projected_pos.w;
++
++    float projectionScaling = 1.0;
++#if defined(PROJECTION_GLOBE)
++    if (drawable.pitch_with_map && !drawable.is_along_line) {
++        const float anchor_pos_tile_y = (drawable.coord_matrix * float4(projected_pos.xy / projected_pos.w, z, 1.0)).y;
++        projectionScaling = mix(projectionScaling, 1.0 / circumferenceRatioAtTileY(anchor_pos_tile_y, projection) * drawable.pitched_scale, projection.projection_transition);
++    }
++#endif
++
+     const float2 pos_rot = a_offset / 32.0 * fontScale;
+-    const float2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
+-    const float4 position = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
++    float4 position = drawable.coord_matrix * float4(projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot * projectionScaling, z, 1.0);
++    if (drawable.pitch_with_map) {
++        position = projectTileWithElevation(position.xy, position.z, projection);
++    }
+     const float gamma_scale = position.w;
+     const bool is_icon = (is_sdf == ICON);
+ 
+diff --git a/include/mln/shaders/symbol_layer_ubo.hpp b/include/mln/shaders/symbol_layer_ubo.hpp
+index e085b4aee32bd034d8e451bea29ca92a3af604fb..8feae0e8409eb0d55cba557d1cb067eff4c1deb2 100644
+--- a/include/mln/shaders/symbol_layer_ubo.hpp
++++ b/include/mln/shaders/symbol_layer_ubo.hpp
+@@ -29,9 +29,15 @@ struct alignas(16) SymbolDrawableUBO {
+     /* 248 */ float opacity_t;
+     /* 252 */ float halo_width_t;
+     /* 256 */ float halo_blur_t;
+-    /* 260 */
++    /* 260 */ /*bool*/ int is_along_line;
++    /* 264 */ /*bool*/ int is_variable_anchor;
++    /* 268 */ float pitched_scale;
++    /* 272 */ std::array<float, 2> translation;
++    /* 280 */ float pad1;
++    /* 284 */ float pad2;
++    /* 288 */
+ };
+-static_assert(sizeof(SymbolDrawableUBO) == 17 * 16);
++static_assert(sizeof(SymbolDrawableUBO) == 18 * 16);
+ 
+ struct alignas(16) SymbolTilePropsUBO {
+     /*  0 */ /*bool*/ int is_text;
+diff --git a/include/mln/shaders/vulkan/common.hpp b/include/mln/shaders/vulkan/common.hpp
+index bd5025e1c082fbdb3b946c86fd3fccde23cd5f57..48b0d2ec185acbfaca7c408ef09bc47fd842d38c 100644
+--- a/include/mln/shaders/vulkan/common.hpp
++++ b/include/mln/shaders/vulkan/common.hpp
+@@ -137,6 +137,10 @@ vec4 projectTile(vec2 pos, ProjectionUBO projection) {
+     return projection.matrix * vec4(pos, 0.0, 1.0);
+ }
+ 
++vec4 projectTileWithElevation(vec2 pos, float elevation, ProjectionUBO projection) {
++    return projection.matrix * vec4(pos, elevation, 1.0);
++}
++
+ void applySurfaceTransform() {
+ #ifdef USE_SURFACE_TRANSFORM
+     const mat2 rotation = {
+diff --git a/include/mln/shaders/vulkan/symbol.hpp b/include/mln/shaders/vulkan/symbol.hpp
+index 1f4973962de2b495cc5cab5aac54d6ed7e94b3b1..e4fa4fe327b9845c21edf2f35e1bcfc6a2a55457 100644
+--- a/include/mln/shaders/vulkan/symbol.hpp
++++ b/include/mln/shaders/vulkan/symbol.hpp
+@@ -63,12 +63,23 @@ struct SymbolDrawableUBO {
+     float opacity_t;
+     float halo_width_t;
+     float halo_blur_t;
++
++    bool is_along_line;
++    bool is_variable_anchor;
++    float pitched_scale;
++    vec2 translation;
++    float pad1;
++    float pad2;
+ };
+ 
+ layout(std140, set = LAYER_SET_INDEX, binding = idSymbolDrawableUBO) readonly buffer SymbolDrawableUBOVector {
+     SymbolDrawableUBO drawable_ubo[];
+ } drawableVector;
+ 
++layout(std140, set = LAYER_SET_INDEX, binding = idProjectionUBO) readonly buffer ProjectionUBOVector {
++    ProjectionUBO projection_ubo[];
++} projectionVector;
++
+ struct SymbolInstance {
+     int pos_scale[2];
+     int offset_tltr[2];
+@@ -122,6 +133,7 @@ void main() {
+     const SymbolInstance symbol = symbolInstanceVector.instance[instance];
+     const DynamicInstance dynamic = dynamicInstanceVector.instance[instance];
+     const OpacityInstance opacity = opacityInstanceVector.instance[instance];
++    const ProjectionUBO projection = projectionVector.projection_ubo[constant.ubo_index];
+ 
+     const vec2 a_pos = unpack_int(symbol.pos_scale[0]);
+     const vec2 offset_tb[2] = {unpack_int(symbol.offset_tltr[in_pos.x]), unpack_int(symbol.offset_blbr[in_pos.x])};
+@@ -145,7 +157,8 @@ void main() {
+         size = drawable.size;
+     }
+ 
+-    const vec4 projectedPoint = drawable.matrix * vec4(a_pos, 0, 1);
++    const vec2 translated_a_pos = a_pos + drawable.translation;
++    const vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     const float camera_to_anchor_distance = projectedPoint.w;
+     // See comments in symbol_sdf.vertex
+     const float distance_ratio = drawable.pitch_with_map ?
+@@ -165,7 +178,7 @@ void main() {
+     float symbol_rotation = 0.0;
+     if (drawable.rotate_symbol) {
+         // See comments in symbol_sdf.vertex
+-        const vec4 offsetProjectedPoint = drawable.matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        const vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0, projection);
+ 
+         const vec2 a = projectedPoint.xy / projectedPoint.w;
+         const vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -176,10 +189,21 @@ void main() {
+     const float angle_cos = cos(segment_angle + symbol_rotation);
+     const mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    const vec4 projected_pos = drawable.label_plane_matrix * vec4(dynamic.projected_pos[0], dynamic.projected_pos[1], 0.0, 1.0);
+-    const vec2 pos0 = projected_pos.xy / projected_pos.w;
++    const vec2 projected_pos_xy = vec2(dynamic.projected_pos[0], dynamic.projected_pos[1]);
++    vec4 projected_pos;
++    if (drawable.is_along_line || drawable.is_variable_anchor) {
++        projected_pos = vec4(projected_pos_xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map) {
++        projected_pos = drawable.label_plane_matrix * vec4(projected_pos_xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(projected_pos_xy + drawable.translation, 0.0, projection);
++    }
++    const float z = float(drawable.pitch_with_map) * projected_pos.z / projected_pos.w;
+     const vec2 posOffset = a_offset * max(a_minFontScale, fontScale) / 32.0 + a_pxoffset / 16.0;
+-    gl_Position = drawable.coord_matrix * vec4(pos0 + rotation_matrix * posOffset, 0.0, 1.0);
++    gl_Position = drawable.coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * posOffset, z, 1.0);
++    if (drawable.pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z, projection);
++    }
+     applySurfaceTransform();
+ 
+     const vec2 raw_fade_opacity = unpack_opacity(opacity.fade_opacity);
+@@ -299,12 +323,23 @@ struct SymbolDrawableUBO {
+     float opacity_t;
+     float halo_width_t;
+     float halo_blur_t;
++
++    bool is_along_line;
++    bool is_variable_anchor;
++    float pitched_scale;
++    vec2 translation;
++    float pad1;
++    float pad2;
+ };
+ 
+ layout(std140, set = LAYER_SET_INDEX, binding = idSymbolDrawableUBO) readonly buffer SymbolDrawableUBOVector {
+     SymbolDrawableUBO drawable_ubo[];
+ } drawableVector;
+ 
++layout(std140, set = LAYER_SET_INDEX, binding = idProjectionUBO) readonly buffer ProjectionUBOVector {
++    ProjectionUBO projection_ubo[];
++} projectionVector;
++
+ struct SymbolInstance {
+     int pos_scale[2];
+     int offset_tltr[2];
+@@ -394,6 +429,7 @@ void main() {
+     const SymbolInstance symbol = symbolInstanceVector.instance[instance];
+     const DynamicInstance dynamic = dynamicInstanceVector.instance[instance];
+     const OpacityInstance opacity = opacityInstanceVector.instance[instance];
++    const ProjectionUBO projection = projectionVector.projection_ubo[constant.ubo_index];
+ 
+     const vec2 a_pos = unpack_int(symbol.pos_scale[0]);
+     const vec2 offset_tb[2] = {unpack_int(symbol.offset_tltr[in_pos.x]), unpack_int(symbol.offset_blbr[in_pos.x])};
+@@ -415,7 +451,8 @@ void main() {
+         size = drawable.size;
+     }
+ 
+-    const vec4 projectedPoint = drawable.matrix * vec4(a_pos, 0, 1);
++    const vec2 translated_a_pos = a_pos + drawable.translation;
++    const vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     const float camera_to_anchor_distance = projectedPoint.w;
+     // If the label is pitched with the map, layout is done in pitched space,
+     // which makes labels in the distance smaller relative to viewport space.
+@@ -442,7 +479,7 @@ void main() {
+         // Point labels with 'rotation-alignment: map' are horizontal with respect to tile units
+         // To figure out that angle in projected space, we draw a short horizontal line in tile
+         // space, project it, and measure its angle in projected space.
+-        const vec4 offsetProjectedPoint = drawable.matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        const vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0, projection);
+ 
+         const vec2 a = projectedPoint.xy / projectedPoint.w;
+         const vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -453,10 +490,21 @@ void main() {
+     const float angle_cos = cos(segment_angle + symbol_rotation);
+     const mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    const vec4 projected_pos = drawable.label_plane_matrix * vec4(dynamic.projected_pos[0], dynamic.projected_pos[1], 0.0, 1.0);
++    const vec2 projected_pos_xy = vec2(dynamic.projected_pos[0], dynamic.projected_pos[1]);
++    vec4 projected_pos;
++    if (drawable.is_along_line || drawable.is_variable_anchor) {
++        projected_pos = vec4(projected_pos_xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map) {
++        projected_pos = drawable.label_plane_matrix * vec4(projected_pos_xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(projected_pos_xy + drawable.translation, 0.0, projection);
++    }
++    const float z = float(drawable.pitch_with_map) * projected_pos.z / projected_pos.w;
+     const vec2 pos_rot = a_offset / 32.0 * fontScale + a_pxoffset;
+-    const vec2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
+-    gl_Position = drawable.coord_matrix * vec4(pos0, 0.0, 1.0);
++    gl_Position = drawable.coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot, z, 1.0);
++    if (drawable.pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z, projection);
++    }
+     applySurfaceTransform();
+ 
+     const vec2 raw_fade_opacity = unpack_opacity(opacity.fade_opacity);
+@@ -653,12 +701,23 @@ struct SymbolDrawableUBO {
+     float opacity_t;
+     float halo_width_t;
+     float halo_blur_t;
++
++    bool is_along_line;
++    bool is_variable_anchor;
++    float pitched_scale;
++    vec2 translation;
++    float pad1;
++    float pad2;
+ };
+ 
+ layout(std140, set = LAYER_SET_INDEX, binding = idSymbolDrawableUBO) readonly buffer SymbolDrawableUBOVector {
+     SymbolDrawableUBO drawable_ubo[];
+ } drawableVector;
+ 
++layout(std140, set = LAYER_SET_INDEX, binding = idProjectionUBO) readonly buffer ProjectionUBOVector {
++    ProjectionUBO projection_ubo[];
++} projectionVector;
++
+ struct SymbolInstance {
+     int pos_scale[2];
+     int offset_tltr[2];
+@@ -750,6 +809,7 @@ void main() {
+     const SymbolInstance symbol = symbolInstanceVector.instance[instance];
+     const DynamicInstance dynamic = dynamicInstanceVector.instance[instance];
+     const OpacityInstance opacity = opacityInstanceVector.instance[instance];
++    const ProjectionUBO projection = projectionVector.projection_ubo[constant.ubo_index];
+ 
+     const vec2 a_pos = unpack_int(symbol.pos_scale[0]);
+     const vec2 offset_tb[2] = {unpack_int(symbol.offset_tltr[in_pos.x]), unpack_int(symbol.offset_blbr[in_pos.x])};
+@@ -771,7 +831,8 @@ void main() {
+         size = drawable.size;
+     }
+ 
+-    const vec4 projectedPoint = drawable.matrix * vec4(a_pos, 0, 1);
++    const vec2 translated_a_pos = a_pos + drawable.translation;
++    const vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     const float camera_to_anchor_distance = projectedPoint.w;
+     // If the label is pitched with the map, layout is done in pitched space,
+     // which makes labels in the distance smaller relative to viewport space.
+@@ -798,7 +859,7 @@ void main() {
+         // Point labels with 'rotation-alignment: map' are horizontal with respect to tile units
+         // To figure out that angle in projected space, we draw a short horizontal line in tile
+         // space, project it, and measure its angle in projected space.
+-        const vec4 offsetProjectedPoint = drawable.matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        const vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0, projection);
+ 
+         const vec2 a = projectedPoint.xy / projectedPoint.w;
+         const vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -809,10 +870,21 @@ void main() {
+     const float angle_cos = cos(segment_angle + symbol_rotation);
+     const mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    const vec4 projected_pos = drawable.label_plane_matrix * vec4(dynamic.projected_pos[0], dynamic.projected_pos[1], 0.0, 1.0);
++    const vec2 projected_pos_xy = vec2(dynamic.projected_pos[0], dynamic.projected_pos[1]);
++    vec4 projected_pos;
++    if (drawable.is_along_line || drawable.is_variable_anchor) {
++        projected_pos = vec4(projected_pos_xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map) {
++        projected_pos = drawable.label_plane_matrix * vec4(projected_pos_xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(projected_pos_xy + drawable.translation, 0.0, projection);
++    }
++    const float z = float(drawable.pitch_with_map) * projected_pos.z / projected_pos.w;
+     const vec2 pos_rot = a_offset / 32.0 * fontScale;
+-    const vec2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
+-    gl_Position = drawable.coord_matrix * vec4(pos0, 0.0, 1.0);
++    gl_Position = drawable.coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot, z, 1.0);
++    if (drawable.pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z, projection);
++    }
+     applySurfaceTransform();
+ 
+     const vec2 raw_fade_opacity = unpack_opacity(opacity.fade_opacity);
+diff --git a/include/mln/shaders/webgpu/common.hpp b/include/mln/shaders/webgpu/common.hpp
+index 99cb3bcf9549a89901f1ed91b47da43682f927c7..eed0e126106888d97e072cc62bdd4266a678e336 100644
+--- a/include/mln/shaders/webgpu/common.hpp
++++ b/include/mln/shaders/webgpu/common.hpp
+@@ -98,6 +98,10 @@ struct ProjectionUBO {
+ fn projectTile(pos: vec2<f32>, projection: ProjectionUBO) -> vec4<f32> {
+     return projection.matrix * vec4<f32>(pos, 0.0, 1.0);
+ }
++
++fn projectTileWithElevation(pos: vec2<f32>, elevation: f32, projection: ProjectionUBO) -> vec4<f32> {
++    return projection.matrix * vec4<f32>(pos, elevation, 1.0);
++}
+ )";
+ };
+ 
+diff --git a/include/mln/shaders/webgpu/symbol.hpp b/include/mln/shaders/webgpu/symbol.hpp
+index db8c8a1b38b115de9281cd05feb7e8edc4ffc355..edaf1a46da7c5abc9bd6de4956c15c4ff3a28e3f 100644
+--- a/include/mln/shaders/webgpu/symbol.hpp
++++ b/include/mln/shaders/webgpu/symbol.hpp
+@@ -52,6 +52,13 @@ struct SymbolDrawableUBO {
+     opacity_t: f32,
+     halo_width_t: f32,
+     halo_blur_t: f32,
++
++    is_along_line: u32,
++    is_variable_anchor: u32,
++    pitched_scale: f32,
++    translation: vec2<f32>,
++    pad1: f32,
++    pad2: f32,
+ };
+ 
+ struct SymbolTilePropsUBO {
+@@ -117,6 +124,7 @@ struct VertexOutput {
+ @group(0) @binding(0) var<uniform> paintParams: GlobalPaintParamsUBO;
+ @group(0) @binding(1) var<uniform> globalIndex: GlobalIndexUBO;
+ @group(0) @binding(2) var<storage, read> drawableVector: array<SymbolDrawableUBO>;
++@group(0) @binding(4) var<storage, read> projectionVector: array<ProjectionUBO>;
+ 
+ @vertex
+ fn main(in: VertexInput) -> VertexOutput {
+@@ -166,7 +174,9 @@ fn main(in: VertexInput) -> VertexOutput {
+         size = drawable.size;
+     }
+ 
+-    let projectedPoint = drawable.matrix * vec4<f32>(a_pos, 0.0, 1.0);
++    let projection = projectionVector[globalIndex.value];
++    let translated_a_pos = a_pos + drawable.translation;
++    let projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     let camera_to_anchor_distance = projectedPoint.w;
+     let pitch_with_map = drawable.pitch_with_map != 0u;
+     let distance_ratio = select(
+@@ -185,7 +195,7 @@ fn main(in: VertexInput) -> VertexOutput {
+ 
+     var symbol_rotation = 0.0;
+     if (drawable.rotate_symbol != 0u) {
+-        let offsetProjectedPoint = drawable.matrix * vec4<f32>(a_pos + vec2<f32>(1.0, 0.0), 0.0, 1.0);
++        let offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2<f32>(1.0, 0.0), 0.0, projection);
+         let a = projectedPoint.xy / projectedPoint.w;
+         let b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+         symbol_rotation = atan2((b.y - a.y) / paintParams.aspect_ratio, b.x - a.x);
+@@ -195,10 +205,20 @@ fn main(in: VertexInput) -> VertexOutput {
+     let angle_cos = cos(segment_angle + symbol_rotation);
+     let rotation_matrix = mat2x2<f32>(angle_cos, -angle_sin, angle_sin, angle_cos);
+ 
+-    let projected_pos = drawable.label_plane_matrix * vec4<f32>(in.projected_pos.xy, 0.0, 1.0);
+-    let pos0 = projected_pos.xy / projected_pos.w;
++    var projected_pos: vec4<f32>;
++    if (drawable.is_along_line != 0u || drawable.is_variable_anchor != 0u) {
++        projected_pos = vec4<f32>(in.projected_pos.xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map != 0u) {
++        projected_pos = drawable.label_plane_matrix * vec4<f32>(in.projected_pos.xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(in.projected_pos.xy + drawable.translation, 0.0, projection);
++    }
++    let z = select(0.0, projected_pos.z / projected_pos.w, drawable.pitch_with_map != 0u);
+     let posOffset = a_offset * max(a_minFontScale, vec2<f32>(fontScale)) / 32.0 + a_pxoffset / 16.0;
+-    let position = drawable.coord_matrix * vec4<f32>(pos0 + rotation_matrix * posOffset, 0.0, 1.0);
++    var position = drawable.coord_matrix * vec4<f32>(projected_pos.xy / projected_pos.w + rotation_matrix * posOffset, z, 1.0);
++    if (drawable.pitch_with_map != 0u) {
++        position = projectTileWithElevation(position.xy, position.z, projection);
++    }
+ 
+     out.position = position;
+     out.tex = a_tex / drawable.texsize;
+@@ -299,6 +319,7 @@ struct VertexOutput {
+ @group(0) @binding(0) var<uniform> paintParams: GlobalPaintParamsUBO;
+ @group(0) @binding(1) var<uniform> globalIndex: GlobalIndexUBO;
+ @group(0) @binding(2) var<storage, read> drawableVector: array<SymbolDrawableUBO>;
++@group(0) @binding(4) var<storage, read> projectionVector: array<ProjectionUBO>;
+ @group(0) @binding(5) var<uniform> props: SymbolEvaluatedPropsUBO;
+ 
+ @vertex
+@@ -341,7 +362,9 @@ fn main(in: VertexInput) -> VertexOutput {
+         size = drawable.size;
+     }
+ 
+-    let projectedPoint = drawable.matrix * vec4<f32>(a_pos, 0.0, 1.0);
++    let projection = projectionVector[globalIndex.value];
++    let translated_a_pos = a_pos + drawable.translation;
++    let projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     let camera_to_anchor_distance = projectedPoint.w;
+     let pitch_with_map = drawable.pitch_with_map != 0u;
+     let distance_ratio = select(
+@@ -360,7 +383,7 @@ fn main(in: VertexInput) -> VertexOutput {
+ 
+     var symbol_rotation = 0.0;
+     if (drawable.rotate_symbol != 0u) {
+-        let offsetProjectedPoint = drawable.matrix * vec4<f32>(a_pos + vec2<f32>(1.0, 0.0), 0.0, 1.0);
++        let offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2<f32>(1.0, 0.0), 0.0, projection);
+         let a = projectedPoint.xy / projectedPoint.w;
+         let b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+         symbol_rotation = atan2((b.y - a.y) / paintParams.aspect_ratio, b.x - a.x);
+@@ -370,10 +393,20 @@ fn main(in: VertexInput) -> VertexOutput {
+     let angle_cos = cos(segment_angle + symbol_rotation);
+     let rotation_matrix = mat2x2<f32>(angle_cos, -angle_sin, angle_sin, angle_cos);
+ 
+-    let projected_pos = drawable.label_plane_matrix * vec4<f32>(in.projected_pos.xy, 0.0, 1.0);
++    var projected_pos: vec4<f32>;
++    if (drawable.is_along_line != 0u || drawable.is_variable_anchor != 0u) {
++        projected_pos = vec4<f32>(in.projected_pos.xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map != 0u) {
++        projected_pos = drawable.label_plane_matrix * vec4<f32>(in.projected_pos.xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(in.projected_pos.xy + drawable.translation, 0.0, projection);
++    }
++    let z = select(0.0, projected_pos.z / projected_pos.w, drawable.pitch_with_map != 0u);
+     let pos_rot = a_offset / 32.0 * fontScale + a_pxoffset;
+-    let pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
+-    let position = drawable.coord_matrix * vec4<f32>(pos0, 0.0, 1.0);
++    var position = drawable.coord_matrix * vec4<f32>(projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot, z, 1.0);
++    if (drawable.pitch_with_map != 0u) {
++        position = projectTileWithElevation(position.xy, position.z, projection);
++    }
+ 
+     out.position = position;
+     out.tex = a_tex / drawable.texsize;
+@@ -548,6 +581,7 @@ struct VertexOutput {
+ @group(0) @binding(0) var<uniform> paintParams: GlobalPaintParamsUBO;
+ @group(0) @binding(1) var<uniform> globalIndex: GlobalIndexUBO;
+ @group(0) @binding(2) var<storage, read> drawableVector: array<SymbolDrawableUBO>;
++@group(0) @binding(4) var<storage, read> projectionVector: array<ProjectionUBO>;
+ 
+ const SDF = 1.0;
+ const ICON = 0.0;
+@@ -592,7 +626,9 @@ fn main(in: VertexInput) -> VertexOutput {
+         size = drawable.size;
+     }
+ 
+-    let projectedPoint = drawable.matrix * vec4<f32>(a_pos, 0.0, 1.0);
++    let projection = projectionVector[globalIndex.value];
++    let translated_a_pos = a_pos + drawable.translation;
++    let projectedPoint = projectTileWithElevation(translated_a_pos, 0.0, projection);
+     let camera_to_anchor_distance = projectedPoint.w;
+     let pitch_with_map = drawable.pitch_with_map != 0u;
+     let distance_ratio = select(
+@@ -610,7 +646,7 @@ fn main(in: VertexInput) -> VertexOutput {
+ 
+     var symbol_rotation = 0.0;
+     if (drawable.rotate_symbol != 0u) {
+-        let offsetProjectedPoint = drawable.matrix * vec4<f32>(a_pos + vec2<f32>(1.0, 0.0), 0.0, 1.0);
++        let offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2<f32>(1.0, 0.0), 0.0, projection);
+         let a = projectedPoint.xy / projectedPoint.w;
+         let b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+         symbol_rotation = atan2((b.y - a.y) / paintParams.aspect_ratio, b.x - a.x);
+@@ -620,10 +656,20 @@ fn main(in: VertexInput) -> VertexOutput {
+     let angle_cos = cos(segment_angle + symbol_rotation);
+     let rotation_matrix = mat2x2<f32>(angle_cos, -angle_sin, angle_sin, angle_cos);
+ 
+-    let projected_pos = drawable.label_plane_matrix * vec4<f32>(in.projected_pos.xy, 0.0, 1.0);
++    var projected_pos: vec4<f32>;
++    if (drawable.is_along_line != 0u || drawable.is_variable_anchor != 0u) {
++        projected_pos = vec4<f32>(in.projected_pos.xy, 0.0, 1.0);
++    } else if (drawable.pitch_with_map != 0u) {
++        projected_pos = drawable.label_plane_matrix * vec4<f32>(in.projected_pos.xy + drawable.translation, 0.0, 1.0);
++    } else {
++        projected_pos = drawable.label_plane_matrix * projectTileWithElevation(in.projected_pos.xy + drawable.translation, 0.0, projection);
++    }
++    let z = select(0.0, projected_pos.z / projected_pos.w, drawable.pitch_with_map != 0u);
+     let pos_rot = a_offset / 32.0 * fontScale;
+-    let pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
+-    let position = drawable.coord_matrix * vec4<f32>(pos0, 0.0, 1.0);
++    var position = drawable.coord_matrix * vec4<f32>(projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot, z, 1.0);
++    if (drawable.pitch_with_map != 0u) {
++        position = projectTileWithElevation(position.xy, position.z, projection);
++    }
+     let gamma_scale = position.w;
+     let is_icon = select(1.0, 0.0, is_sdf == SDF);
+ 
+diff --git a/shaders/_prelude.vertex.glsl b/shaders/_prelude.vertex.glsl
+index fed17f722e06c2e6c5caa8957a21c673128cfc91..287a95d9c7bc7665a6cc178c48d11e8fb064d9ad 100644
+--- a/shaders/_prelude.vertex.glsl
++++ b/shaders/_prelude.vertex.glsl
+@@ -88,3 +88,7 @@ layout (std140) uniform ProjectionUBO {
+ vec4 projectTile(vec2 pos) {
+     return u_projection_matrix * vec4(pos, 0.0, 1.0);
+ }
++
++vec4 projectTileWithElevation(vec2 pos, float elevation) {
++    return u_projection_matrix * vec4(pos, elevation, 1.0);
++}
+diff --git a/shaders/manifest.json b/shaders/manifest.json
+index 2b83c10c577dbccb3ff10a183449f39600b4b596..9e9ba81244f52dd63dbe506a5579745b11f460a9 100644
+--- a/shaders/manifest.json
++++ b/shaders/manifest.json
+@@ -116,6 +116,13 @@
+         "glsl_frag": "_empty.glsl",
+         "uses_ubos": true
+     },
++    {
++        "name": "GlobeDepthShader",
++        "header": "globe_depth",
++        "glsl_vert": "_empty.glsl",
++        "glsl_frag": "_empty.glsl",
++        "uses_ubos": true
++    },
+     {
+         "name": "HeatmapShader",
+         "header": "heatmap",
+diff --git a/shaders/symbol_icon.vertex.glsl b/shaders/symbol_icon.vertex.glsl
+index a2c5dffd7328e4d37b21da5a435cfca8144955e5..7ffd5929188cfd269eada90843d8906f307ec41a 100644
+--- a/shaders/symbol_icon.vertex.glsl
++++ b/shaders/symbol_icon.vertex.glsl
+@@ -40,6 +40,13 @@ layout (std140) uniform SymbolDrawableUBO {
+     highp float u_opacity_t;
+     highp float u_halo_width_t;
+     highp float u_halo_blur_t;
++
++    bool u_is_along_line;
++    bool u_is_variable_anchor;
++    highp float u_pitched_scale;
++    highp vec2 u_translation;
++    highp float u_pad1;
++    highp float u_pad2;
+ };
+ 
+ layout (std140) uniform SymbolEvaluatedPropsUBO {
+@@ -88,7 +95,8 @@ void main() {
+         size = u_size;
+     }
+ 
+-    vec4 projectedPoint = u_matrix * vec4(a_pos, 0, 1);
++    vec2 translated_a_pos = a_pos + u_translation;
++    vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0);
+     highp float camera_to_anchor_distance = projectedPoint.w;
+     // See comments in symbol_sdf.vertex
+     highp float distance_ratio = u_pitch_with_map ?
+@@ -108,7 +116,7 @@ void main() {
+     highp float symbol_rotation = 0.0;
+     if (u_rotate_symbol) {
+         // See comments in symbol_sdf.vertex
+-        vec4 offsetProjectedPoint = u_matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0);
+ 
+         vec2 a = projectedPoint.xy / projectedPoint.w;
+         vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -120,8 +128,19 @@ void main() {
+     highp float angle_cos = cos(segment_angle + symbol_rotation);
+     mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    vec4 projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy, 0.0, 1.0);
+-    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * max(a_minFontScale, fontScale) + a_pxoffset / 16.0), 0.0, 1.0);
++    vec4 projected_pos;
++    if (u_is_along_line || u_is_variable_anchor) {
++        projected_pos = vec4(a_projected_pos.xy, 0.0, 1.0);
++    } else if (u_pitch_with_map) {
++        projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy + u_translation, 0.0, 1.0);
++    } else {
++        projected_pos = u_label_plane_matrix * projectTileWithElevation(a_projected_pos.xy + u_translation, 0.0);
++    }
++    float z = float(u_pitch_with_map) * projected_pos.z / projected_pos.w;
++    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * max(a_minFontScale, fontScale) + a_pxoffset / 16.0), z, 1.0);
++    if (u_pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z);
++    }
+ 
+     v_tex = a_tex / u_texsize;
+     vec2 fade_opacity = unpack_opacity(a_fade_opacity);
+diff --git a/shaders/symbol_sdf.vertex.glsl b/shaders/symbol_sdf.vertex.glsl
+index edf31d4ef31a4dbace4856352fe3f0af25b93f9e..c262ef32ef28e29fbc0cb8e5fbac1162ab242ac2 100644
+--- a/shaders/symbol_sdf.vertex.glsl
++++ b/shaders/symbol_sdf.vertex.glsl
+@@ -48,6 +48,13 @@ layout (std140) uniform SymbolDrawableUBO {
+     highp float u_opacity_t;
+     highp float u_halo_width_t;
+     highp float u_halo_blur_t;
++
++    bool u_is_along_line;
++    bool u_is_variable_anchor;
++    highp float u_pitched_scale;
++    highp vec2 u_translation;
++    highp float u_pad1;
++    highp float u_pad2;
+ };
+ 
+ layout (std140) uniform SymbolEvaluatedPropsUBO {
+@@ -107,7 +114,8 @@ void main() {
+         size = u_size;
+     }
+ 
+-    vec4 projectedPoint = u_matrix * vec4(a_pos, 0, 1);
++    vec2 translated_a_pos = a_pos + u_translation;
++    vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0);
+     highp float camera_to_anchor_distance = projectedPoint.w;
+     // If the label is pitched with the map, layout is done in pitched space,
+     // which makes labels in the distance smaller relative to viewport space.
+@@ -134,7 +142,7 @@ void main() {
+         // Point labels with 'rotation-alignment: map' are horizontal with respect to tile units
+         // To figure out that angle in projected space, we draw a short horizontal line in tile
+         // space, project it, and measure its angle in projected space.
+-        vec4 offsetProjectedPoint = u_matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0);
+ 
+         vec2 a = projectedPoint.xy / projectedPoint.w;
+         vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -146,8 +154,19 @@ void main() {
+     highp float angle_cos = cos(segment_angle + symbol_rotation);
+     mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    vec4 projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy, 0.0, 1.0);
+-    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale + a_pxoffset), 0.0, 1.0);
++    vec4 projected_pos;
++    if (u_is_along_line || u_is_variable_anchor) {
++        projected_pos = vec4(a_projected_pos.xy, 0.0, 1.0);
++    } else if (u_pitch_with_map) {
++        projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy + u_translation, 0.0, 1.0);
++    } else {
++        projected_pos = u_label_plane_matrix * projectTileWithElevation(a_projected_pos.xy + u_translation, 0.0);
++    }
++    float z = float(u_pitch_with_map) * projected_pos.z / projected_pos.w;
++    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale + a_pxoffset), z, 1.0);
++    if (u_pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z);
++    }
+     float gamma_scale = gl_Position.w;
+ 
+     vec2 fade_opacity = unpack_opacity(a_fade_opacity);
+diff --git a/shaders/symbol_text_and_icon.vertex.glsl b/shaders/symbol_text_and_icon.vertex.glsl
+index 3e0557d620652a8351eb5ba87416ddb374650422..8a4b6db30df34440fadc4624965a3a3eaf295f84 100644
+--- a/shaders/symbol_text_and_icon.vertex.glsl
++++ b/shaders/symbol_text_and_icon.vertex.glsl
+@@ -47,6 +47,13 @@ layout (std140) uniform SymbolDrawableUBO {
+     highp float u_opacity_t;
+     highp float u_halo_width_t;
+     highp float u_halo_blur_t;
++
++    bool u_is_along_line;
++    bool u_is_variable_anchor;
++    highp float u_pitched_scale;
++    highp vec2 u_translation;
++    highp float u_pad1;
++    highp float u_pad2;
+ };
+ 
+ layout (std140) uniform SymbolEvaluatedPropsUBO {
+@@ -106,7 +113,8 @@ void main() {
+         size = u_size;
+     }
+ 
+-    vec4 projectedPoint = u_matrix * vec4(a_pos, 0, 1);
++    vec2 translated_a_pos = a_pos + u_translation;
++    vec4 projectedPoint = projectTileWithElevation(translated_a_pos, 0.0);
+     highp float camera_to_anchor_distance = projectedPoint.w;
+     // If the label is pitched with the map, layout is done in pitched space,
+     // which makes labels in the distance smaller relative to viewport space.
+@@ -133,7 +141,7 @@ void main() {
+         // Point labels with 'rotation-alignment: map' are horizontal with respect to tile units
+         // To figure out that angle in projected space, we draw a short horizontal line in tile
+         // space, project it, and measure its angle in projected space.
+-        vec4 offsetProjectedPoint = u_matrix * vec4(a_pos + vec2(1, 0), 0, 1);
++        vec4 offsetProjectedPoint = projectTileWithElevation(translated_a_pos + vec2(1, 0), 0.0);
+ 
+         vec2 a = projectedPoint.xy / projectedPoint.w;
+         vec2 b = offsetProjectedPoint.xy / offsetProjectedPoint.w;
+@@ -145,8 +153,19 @@ void main() {
+     highp float angle_cos = cos(segment_angle + symbol_rotation);
+     mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
+ 
+-    vec4 projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy, 0.0, 1.0);
+-    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale), 0.0, 1.0);
++    vec4 projected_pos;
++    if (u_is_along_line || u_is_variable_anchor) {
++        projected_pos = vec4(a_projected_pos.xy, 0.0, 1.0);
++    } else if (u_pitch_with_map) {
++        projected_pos = u_label_plane_matrix * vec4(a_projected_pos.xy + u_translation, 0.0, 1.0);
++    } else {
++        projected_pos = u_label_plane_matrix * projectTileWithElevation(a_projected_pos.xy + u_translation, 0.0);
++    }
++    float z = float(u_pitch_with_map) * projected_pos.z / projected_pos.w;
++    gl_Position = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale), z, 1.0);
++    if (u_pitch_with_map) {
++        gl_Position = projectTileWithElevation(gl_Position.xy, gl_Position.z);
++    }
+     float gamma_scale = gl_Position.w;
+ 
+     vec2 fade_opacity = unpack_opacity(a_fade_opacity);
+diff --git a/src/mln/layout/symbol_projection.cpp b/src/mln/layout/symbol_projection.cpp
+index f762ba76d41ec2f750eafb0190a5cd6ee103b15c..3155d4a77f4abd206c7353ccba3c29c38539d2d8 100644
+--- a/src/mln/layout/symbol_projection.cpp
++++ b/src/mln/layout/symbol_projection.cpp
+@@ -103,11 +103,7 @@ mat4 getTileSkewMatrix(const TransformState& state) {
+     return m;
+ }
+ 
+-/*
+- * Returns a matrix for converting from tile units to the correct label coordinate space.
+- */
+-mat4 getLabelPlaneMatrix(const mat4& posMatrix,
+-                         const bool pitchWithMap,
++mat4 getLabelPlaneMatrix(const bool pitchWithMap,
+                          const bool rotateWithMap,
+                          const TransformState& state,
+                          const float pixelsToTileUnits) {
+@@ -123,23 +119,17 @@ mat4 getLabelPlaneMatrix(const mat4& posMatrix,
+     } else {
+         matrix::scale(m, m, state.getSize().width / 2.0, -(state.getSize().height / 2.0), 1.0);
+         matrix::translate(m, m, 1, -1, 0);
+-        matrix::multiply(m, m, posMatrix);
+     }
+     return m;
+ }
+ 
+-/*
+- * Returns a matrix for converting from the correct label coordinate space to gl coords.
+- */
+-mat4 getGlCoordMatrix(const mat4& posMatrix,
+-                      const bool pitchWithMap,
++mat4 getGlCoordMatrix(const bool pitchWithMap,
+                       const bool rotateWithMap,
+                       const TransformState& state,
+                       const float pixelsToTileUnits) {
+     mat4 m;
+     matrix::identity(m);
+     if (pitchWithMap) {
+-        matrix::multiply(m, m, posMatrix);
+         matrix::scale(m, m, pixelsToTileUnits, pixelsToTileUnits, 1);
+         if (!rotateWithMap) {
+             matrix::multiply(m, m, getTileSkewMatrix(state));
+@@ -152,6 +142,64 @@ mat4 getGlCoordMatrix(const mat4& posMatrix,
+     return m;
+ }
+ 
++LabelPlaneProjector::LabelPlaneProjector(const TileProjector& tile_,
++                                         const bool pitchWithMap_,
++                                         const bool rotateWithMap,
++                                         const float pixelsToTileUnits,
++                                         const Point<float> translation_)
++    : tile(tile_),
++      pitchWithMap(pitchWithMap_),
++      translation(translation_),
++      width(static_cast<float>(tile_.getTransformState().getSize().width)),
++      height(static_cast<float>(tile_.getTransformState().getSize().height)) {
++    // Only pitched labels lay out in the pitched plane; the others go through the projection.
++    if (pitchWithMap) {
++        pitchedLabelPlaneMatrix = getLabelPlaneMatrix(
++            true, rotateWithMap, tile_.getTransformState(), pixelsToTileUnits);
++        matrix::invert(pitchedLabelPlaneMatrixInverse, pitchedLabelPlaneMatrix);
++    } else {
++        matrix::identity(pitchedLabelPlaneMatrix);
++        matrix::identity(pitchedLabelPlaneMatrixInverse);
++    }
++}
++
++const ProjectedTilePoint& LineProjectionCache::get(std::size_t index,
++                                                   const GeometryCoordinates& line,
++                                                   const LabelPlaneProjector& labelPlane) {
++    auto& cached = points[index];
++    if (!cached) {
++        cached = labelPlane.project(convertPoint<float>(line.at(index)));
++        occluded |= cached->occluded;
++    }
++    return *cached;
++}
++
++ProjectedTilePoint LabelPlaneProjector::project(const Point<float>& tilePoint) const {
++    const Point<float> translated = tilePoint + translation;
++    if (pitchWithMap) {
++        const auto projected = mln::project(translated, pitchedLabelPlaneMatrix);
++        return {.point = {projected.first.x, projected.first.y},
++                .signedDistanceFromCamera = projected.second,
++                .occluded = false};
++    }
++    ProjectedTilePoint projected = tile.project({translated.x, translated.y});
++    projected.point = {(projected.point.x * 0.5 + 0.5) * width, (-projected.point.y * 0.5 + 0.5) * height};
++    return projected;
++}
++
++Point<float> LabelPlaneProjector::toClipSpace(const Point<float>& labelPlanePoint) const {
++    if (pitchWithMap) {
++        const auto tilePoint = mln::project(labelPlanePoint, pitchedLabelPlaneMatrixInverse).first;
++        const auto projected = tile.project({tilePoint.x, tilePoint.y});
++        return {static_cast<float>(projected.point.x), static_cast<float>(projected.point.y)};
++    }
++    return {(labelPlanePoint.x / width) * 2.0f - 1.0f, 1.0f - (labelPlanePoint.y / height) * 2.0f};
++}
++
++ProjectedTilePoint LabelPlaneProjector::toClipSpaceFromTile(const Point<float>& tilePoint) const {
++    return tile.project({tilePoint.x, tilePoint.y});
++}
++
+ PointAndCameraDistance project(const Point<float>& point, const mat4& matrix) {
+     vec4 pos = {{point.x, point.y, 0, 1}};
+     matrix::transformMat4(pos, pos, matrix);
+@@ -170,9 +218,9 @@ float evaluateSizeForFeature(const ZoomEvaluatedSize& zoomEvaluatedSize, const P
+     }
+ }
+ 
+-bool isVisible(const vec4& anchorPos, const std::array<double, 2>& clippingBuffer) {
+-    const double x = anchorPos[0] / anchorPos[3];
+-    const double y = anchorPos[1] / anchorPos[3];
++bool isVisible(const Point<double>& anchorPos, const std::array<double, 2>& clippingBuffer) {
++    const double x = anchorPos.x;
++    const double y = anchorPos.y;
+     const bool inPaddedViewport = (x >= -clippingBuffer[0] && x <= clippingBuffer[0] && y >= -clippingBuffer[1] &&
+                                    y <= clippingBuffer[1]);
+     return inPaddedViewport;
+@@ -212,18 +260,19 @@ enum PlacementResult {
+     UseVertical
+ };
+ 
++template <typename ProjectFn>
+ Point<float> projectTruncatedLineSegment(const Point<float>& previousTilePoint,
+                                          const Point<float>& currentTilePoint,
+                                          const Point<float>& previousProjectedPoint,
+                                          const float minimumLength,
+-                                         const mat4& projectionMatrix) {
++                                         const ProjectFn& projectPoint) {
+     // We are assuming "previousTilePoint" won't project to a point within one
+     // unit of the camera plane If it did, that would mean our label extended
+     // all the way out from within the viewport to a (very distant) point near
+     // the plane of the camera. We wouldn't be able to render the label anyway
+     // once it crossed the plane of the camera.
+-    const Point<float> projectedUnitVertex =
+-        project(previousTilePoint + util::unit<float>(previousTilePoint - currentTilePoint), projectionMatrix).first;
++    const Point<float> projectedUnitVertex = projectPoint(previousTilePoint +
++                                                          util::unit<float>(previousTilePoint - currentTilePoint));
+     const Point<float> projectedUnitSegment = previousProjectedPoint - projectedUnitVertex;
+ 
+     return previousProjectedPoint + (projectedUnitSegment * (minimumLength / util::mag<float>(projectedUnitSegment)));
+@@ -238,7 +287,8 @@ std::optional<PlacedGlyph> placeGlyphAlongLine(const float offsetX,
+                                                const uint16_t anchorSegment,
+                                                const GeometryCoordinates& line,
+                                                const std::vector<float>& tileDistances,
+-                                               const mat4& labelPlaneMatrix,
++                                               const LabelPlaneProjector& labelPlane,
++                                               LineProjectionCache& projections,
+                                                const bool returnTileDistance) {
+     const float combinedOffsetX = flip ? offsetX - lineOffsetX : offsetX + lineOffsetX;
+ 
+@@ -272,9 +322,9 @@ std::optional<PlacedGlyph> placeGlyphAlongLine(const float offsetX,
+         }
+ 
+         prev = current;
+-        PointAndCameraDistance projection = project(convertPoint<float>(line.at(currentIndex)), labelPlaneMatrix);
+-        if (projection.second > 0) {
+-            current = projection.first;
++        const ProjectedTilePoint& projection = projections.get(currentIndex, line, labelPlane);
++        if (projection.signedDistanceFromCamera > 0) {
++            current = {static_cast<float>(projection.point.x), static_cast<float>(projection.point.y)};
+         } else {
+             // The vertex is behind the plane of the camera, so we can't project it
+             // Instead, we'll create a vertex along the line that's far enough to include the glyph
+@@ -283,7 +333,10 @@ std::optional<PlacedGlyph> placeGlyphAlongLine(const float offsetX,
+                                                        : convertPoint<float>(line.at(currentIndex - dir));
+             const Point<float> currentTilePoint = convertPoint<float>(line.at(currentIndex));
+             current = projectTruncatedLineSegment(
+-                previousTilePoint, currentTilePoint, prev, absOffsetX - distanceToPrev + 1, labelPlaneMatrix);
++                previousTilePoint, currentTilePoint, prev, absOffsetX - distanceToPrev + 1, [&](const Point<float>& p) {
++                    const auto projected = labelPlane.project(p);
++                    return Point<float>{static_cast<float>(projected.point.x), static_cast<float>(projected.point.y)};
++                });
+         }
+ 
+         distanceToPrev += currentSegmentDistance;
+@@ -315,7 +368,8 @@ std::optional<std::pair<PlacedGlyph, PlacedGlyph>> placeFirstAndLastGlyph(const
+                                                                           const Point<float>& anchorPoint,
+                                                                           const Point<float>& tileAnchorPoint,
+                                                                           const PlacedSymbol& symbol,
+-                                                                          const mat4& labelPlaneMatrix,
++                                                                          const LabelPlaneProjector& labelPlane,
++                                                                          LineProjectionCache& projections,
+                                                                           const bool returnTileDistance) {
+     if (symbol.glyphOffsets.empty()) {
+         assert(false);
+@@ -334,7 +388,8 @@ std::optional<std::pair<PlacedGlyph, PlacedGlyph>> placeFirstAndLastGlyph(const
+                                                                       static_cast<uint16_t>(symbol.segment),
+                                                                       symbol.line,
+                                                                       symbol.tileDistances,
+-                                                                      labelPlaneMatrix,
++                                                                      labelPlane,
++                                                                      projections,
+                                                                       returnTileDistance);
+     if (!firstPlacedGlyph) return {};
+ 
+@@ -347,9 +402,12 @@ std::optional<std::pair<PlacedGlyph, PlacedGlyph>> placeFirstAndLastGlyph(const
+                                                                      static_cast<uint16_t>(symbol.segment),
+                                                                      symbol.line,
+                                                                      symbol.tileDistances,
+-                                                                     labelPlaneMatrix,
++                                                                     labelPlane,
++                                                                     projections,
+                                                                      returnTileDistance);
+     if (!lastPlacedGlyph) return {};
++    // A line label with any vertex behind the planet is hidden whole.
++    if (projections.anyOccluded()) return {};
+ 
+     return std::make_pair(*firstPlacedGlyph, *lastPlacedGlyph);
+ }
+@@ -382,9 +440,8 @@ PlacementResult placeGlyphsAlongLine(const PlacedSymbol& symbol,
+                                      const float fontSize,
+                                      const bool flip,
+                                      const bool keepUpright,
+-                                     const mat4& posMatrix,
+-                                     const mat4& labelPlaneMatrix,
+-                                     const mat4& glCoordMatrix,
++                                     const LabelPlaneProjector& labelPlane,
++                                     LineProjectionCache& projections,
+                                      SymbolBucket::DynamicAttributeVector& dynamicVertexArray,
+                                      const Point<float>& projectedAnchorPoint,
+                                      const float aspectRatio) {
+@@ -402,14 +459,15 @@ PlacementResult placeGlyphsAlongLine(const PlacedSymbol& symbol,
+             projectedAnchorPoint,
+             symbol.anchorPoint,
+             symbol,
+-            labelPlaneMatrix,
++            labelPlane,
++            projections,
+             false);
+         if (!firstAndLastGlyph) {
+             return PlacementResult::NotEnoughRoom;
+         }
+ 
+-        const Point<float> firstPoint = project(firstAndLastGlyph->first.point, glCoordMatrix).first;
+-        const Point<float> lastPoint = project(firstAndLastGlyph->second.point, glCoordMatrix).first;
++        const Point<float> firstPoint = labelPlane.toClipSpace(firstAndLastGlyph->first.point);
++        const Point<float> lastPoint = labelPlane.toClipSpace(firstAndLastGlyph->second.point);
+ 
+         if (keepUpright && !flip) {
+             auto orientationChange = requiresOrientationChange(symbol.writingModes, firstPoint, lastPoint, aspectRatio);
+@@ -433,7 +491,8 @@ PlacementResult placeGlyphsAlongLine(const PlacedSymbol& symbol,
+                                                    static_cast<uint16_t>(symbol.segment),
+                                                    symbol.line,
+                                                    symbol.tileDistances,
+-                                                   labelPlaneMatrix,
++                                                   labelPlane,
++                                                   projections,
+                                                    false);
+             if (placedGlyph) {
+                 placedGlyphs.push_back(*placedGlyph);
+@@ -446,17 +505,21 @@ PlacementResult placeGlyphsAlongLine(const PlacedSymbol& symbol,
+         // Only a single glyph to place
+         // So, determine whether to flip based on projected angle of the line segment it's on
+         if (keepUpright && !flip) {
+-            const Point<float> a = project(symbol.anchorPoint, posMatrix).first;
++            const auto toClip = [&](const Point<float>& p) {
++                const auto projected = labelPlane.toClipSpaceFromTile(p);
++                return Point<float>{static_cast<float>(projected.point.x), static_cast<float>(projected.point.y)};
++            };
++            const Point<float> a = toClip(symbol.anchorPoint);
+             const Point<float> tileSegmentEnd = convertPoint<float>(symbol.line.at(symbol.segment + 1));
+-            const PointAndCameraDistance projectedVertex = project(tileSegmentEnd, posMatrix);
++            const ProjectedTilePoint projectedVertex = labelPlane.toClipSpaceFromTile(tileSegmentEnd);
+             // We know the anchor will be in the viewport, but the end of the
+             // line segment may be behind the plane of the camera, in which case
+             // we can use a point at any arbitrary (closer) point on the
+             // segment.
+-            const Point<float> b = (projectedVertex.second > 0)
+-                                       ? projectedVertex.first
+-                                       : projectTruncatedLineSegment(
+-                                             symbol.anchorPoint, tileSegmentEnd, a, 1, posMatrix);
++            const Point<float> b = (projectedVertex.signedDistanceFromCamera > 0)
++                                       ? Point<float>{static_cast<float>(projectedVertex.point.x),
++                                                      static_cast<float>(projectedVertex.point.y)}
++                                       : projectTruncatedLineSegment(symbol.anchorPoint, tileSegmentEnd, a, 1, toClip);
+ 
+             auto orientationChange = requiresOrientationChange(symbol.writingModes, a, b, aspectRatio);
+             if (orientationChange) {
+@@ -473,9 +536,10 @@ PlacementResult placeGlyphsAlongLine(const PlacedSymbol& symbol,
+                                                                      static_cast<uint16_t>(symbol.segment),
+                                                                      symbol.line,
+                                                                      symbol.tileDistances,
+-                                                                     labelPlaneMatrix,
++                                                                     labelPlane,
++                                                                     projections,
+                                                                      false);
+-        if (!singleGlyph) return PlacementResult::NotEnoughRoom;
++        if (!singleGlyph || projections.anyOccluded()) return PlacementResult::NotEnoughRoom;
+ 
+         placedGlyphs.push_back(*singleGlyph);
+     }
+@@ -495,7 +559,7 @@ PlacementResult placeGlyphsAlongLine(const PlacedSymbol& symbol,
+ 
+ void reprojectLineLabels(SymbolBucket::DynamicAttributeVector& dynamicVertexArray,
+                          const std::vector<PlacedSymbol>& placedSymbols,
+-                         const mat4& posMatrix,
++                         const TileProjector& tileProjector,
+                          bool pitchWithMap,
+                          bool rotateWithMap,
+                          bool keepUpright,
+@@ -509,13 +573,12 @@ void reprojectLineLabels(SymbolBucket::DynamicAttributeVector& dynamicVertexArra
+ 
+     const float pixelsToTileUnits = tile.id.pixelsToTileUnits(1.0f, static_cast<float>(state.getZoom()));
+ 
+-    const mat4 labelPlaneMatrix = getLabelPlaneMatrix(posMatrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
+-
+-    const mat4 glCoordMatrix = getGlCoordMatrix(posMatrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
++    const LabelPlaneProjector labelPlane(tileProjector, pitchWithMap, rotateWithMap, pixelsToTileUnits);
+ 
+     dynamicVertexArray.clear();
+ 
+     bool useVertical = false;
++    LineProjectionCache projections;
+ 
+     for (auto& placedSymbol : placedSymbols) {
+         // Don't do calculations for vertical glyphs unless the previous symbol
+@@ -530,30 +593,35 @@ void reprojectLineLabels(SymbolBucket::DynamicAttributeVector& dynamicVertexArra
+         // immediately after its horizontal counterpart
+         useVertical = false;
+ 
+-        vec4 anchorPos = {{placedSymbol.anchorPoint.x, placedSymbol.anchorPoint.y, 0, 1}};
+-        matrix::transformMat4(anchorPos, anchorPos, posMatrix);
++        const ProjectedTilePoint anchorPos = tileProjector.project(
++            {placedSymbol.anchorPoint.x, placedSymbol.anchorPoint.y});
+ 
+         // Don't bother calculating the correct point for invisible labels.
+-        if (!isVisible(anchorPos, clippingBuffer)) {
++        if (anchorPos.occluded || !isVisible(anchorPos.point, clippingBuffer)) {
+             hideGlyphs(placedSymbol.glyphOffsets.size(), dynamicVertexArray);
+             continue;
+         }
+ 
+-        const auto cameraToAnchorDistance = static_cast<float>(anchorPos[3]);
++        const auto cameraToAnchorDistance = static_cast<float>(anchorPos.signedDistanceFromCamera);
+         const float perspectiveRatio = 0.5f + 0.5f * (cameraToAnchorDistance / state.getCameraToCenterDistance());
+ 
+         const float fontSize = evaluateSizeForFeature(partiallyEvaluatedSize, placedSymbol);
+-        const float pitchScaledFontSize = pitchWithMap ? fontSize * perspectiveRatio : fontSize / perspectiveRatio;
++        const float pitchScaledFontSize = pitchWithMap
++                                              ? fontSize * perspectiveRatio *
++                                                    static_cast<float>(tileProjector.pitchedTextCorrection(
++                                                        {placedSymbol.anchorPoint.x, placedSymbol.anchorPoint.y}))
++                                              : fontSize / perspectiveRatio;
+ 
+-        const Point<float> anchorPoint = project(placedSymbol.anchorPoint, labelPlaneMatrix).first;
++        const auto projectedAnchor = labelPlane.project(placedSymbol.anchorPoint).point;
++        const Point<float> anchorPoint{static_cast<float>(projectedAnchor.x), static_cast<float>(projectedAnchor.y)};
+ 
++        projections.reset(placedSymbol.line.size());
+         PlacementResult placeUnflipped = placeGlyphsAlongLine(placedSymbol,
+                                                               pitchScaledFontSize,
+                                                               false /*unflipped*/,
+                                                               keepUpright,
+-                                                              posMatrix,
+-                                                              labelPlaneMatrix,
+-                                                              glCoordMatrix,
++                                                              labelPlane,
++                                                              projections,
+                                                               dynamicVertexArray,
+                                                               anchorPoint,
+                                                               state.getSize().aspectRatio());
+@@ -566,9 +634,8 @@ void reprojectLineLabels(SymbolBucket::DynamicAttributeVector& dynamicVertexArra
+                                   pitchScaledFontSize,
+                                   true /*flipped*/,
+                                   keepUpright,
+-                                  posMatrix,
+-                                  labelPlaneMatrix,
+-                                  glCoordMatrix,
++                                  labelPlane,
++                                  projections,
+                                   dynamicVertexArray,
+                                   anchorPoint,
+                                   state.getSize().aspectRatio()) == PlacementResult::NotEnoughRoom)) {
+diff --git a/src/mln/layout/symbol_projection.hpp b/src/mln/layout/symbol_projection.hpp
+index cce434033627817260688cb40fd2357f5b37e8d7..4296a1f6ce1026612f17908c376e6fb5b0ad82e7 100644
+--- a/src/mln/layout/symbol_projection.hpp
++++ b/src/mln/layout/symbol_projection.hpp
+@@ -1,9 +1,12 @@
+ #pragma once
+ 
+ #include <mln/util/mat4.hpp>
++#include <mln/map/tile_projector.hpp>
+ #include <mln/gfx/vertex_buffer.hpp>
+ #include <mln/renderer/buckets/symbol_bucket.hpp>
+ 
++#include <optional>
++
+ namespace mln {
+ 
+ class TransformState;
+@@ -40,17 +43,61 @@ struct PlacedGlyph {
+ };
+ 
+ float evaluateSizeForFeature(const ZoomEvaluatedSize& zoomEvaluatedSize, const PlacedSymbol& placedSymbol);
+-mat4 getLabelPlaneMatrix(
+-    const mat4& posMatrix, bool pitchWithMap, bool rotateWithMap, const TransformState& state, float pixelsToTileUnits);
+-mat4 getGlCoordMatrix(
+-    const mat4& posMatrix, bool pitchWithMap, bool rotateWithMap, const TransformState& state, float pixelsToTileUnits);
++void getTileSkewVectors(const TransformState& state, vec2& vecEast, vec2& vecSouth);
++
++/// Pitched labels: tile units to the pitched map plane in pixels. Viewport labels: clip space to viewport pixels.
++mat4 getLabelPlaneMatrix(bool pitchWithMap, bool rotateWithMap, const TransformState& state, float pixelsToTileUnits);
++/// The inverse for the shader: pitched labels back to tile units, viewport labels to clip space.
++mat4 getGlCoordMatrix(bool pitchWithMap, bool rotateWithMap, const TransformState& state, float pixelsToTileUnits);
+ 
+ using PointAndCameraDistance = std::pair<Point<float>, float>;
+ PointAndCameraDistance project(const Point<float>& point, const mat4& matrix);
+ 
++/// Projects tile points to the label plane a symbol is laid out in, through the tile's projection.
++class LabelPlaneProjector {
++public:
++    LabelPlaneProjector(const TileProjector&,
++                        bool pitchWithMap,
++                        bool rotateWithMap,
++                        float pixelsToTileUnits,
++                        Point<float> translation = {0, 0});
++
++    /// Tile units to the label plane; distance and occlusion come from the projection.
++    ProjectedTilePoint project(const Point<float>& tilePoint) const;
++    /// Label plane to clip space, for orientation checks.
++    Point<float> toClipSpace(const Point<float>& labelPlanePoint) const;
++    /// Tile units straight to clip space.
++    ProjectedTilePoint toClipSpaceFromTile(const Point<float>& tilePoint) const;
++
++private:
++    TileProjector tile;
++    bool pitchWithMap;
++    Point<float> translation;
++    mat4 pitchedLabelPlaneMatrix;
++    mat4 pitchedLabelPlaneMatrixInverse;
++    float width;
++    float height;
++};
++
++/// The projections of one symbol's line vertices, so each vertex is projected once however many glyphs walk it.
++class LineProjectionCache {
++public:
++    void reset(std::size_t vertexCount) {
++        points.assign(vertexCount, std::nullopt);
++        occluded = false;
++    }
++    const ProjectedTilePoint& get(std::size_t index, const GeometryCoordinates& line, const LabelPlaneProjector&);
++    /// Whether any vertex projected so far is behind the globe's horizon.
++    bool anyOccluded() const { return occluded; }
++
++private:
++    std::vector<std::optional<ProjectedTilePoint>> points;
++    bool occluded = false;
++};
++
+ void reprojectLineLabels(SymbolBucket::DynamicAttributeVector&,
+                          const std::vector<PlacedSymbol>&,
+-                         const mat4& posMatrix,
++                         const TileProjector&,
+                          bool pitchWithMap,
+                          bool rotateWithMap,
+                          bool keepUpright,
+@@ -65,7 +112,8 @@ std::optional<std::pair<PlacedGlyph, PlacedGlyph>> placeFirstAndLastGlyph(float
+                                                                           const Point<float>& anchorPoint,
+                                                                           const Point<float>& tileAnchorPoint,
+                                                                           const PlacedSymbol& symbol,
+-                                                                          const mat4& labelPlaneMatrix,
++                                                                          const LabelPlaneProjector&,
++                                                                          LineProjectionCache&,
+                                                                           bool returnTileDistance);
+ 
+ void hideGlyphs(std::size_t numGlyphs, SymbolBucket::DynamicAttributeVector& dynamicVertexArray);
+diff --git a/src/mln/map/mercator_projection.cpp b/src/mln/map/mercator_projection.cpp
+index 05df66b484aa5c1870cb8ab94a578ebd81e8fd76..76caa3e84bd2e44955879a6b0a95248575d238fd 100644
+--- a/src/mln/map/mercator_projection.cpp
++++ b/src/mln/map/mercator_projection.cpp
+@@ -13,7 +13,7 @@ LatLng MercatorProjection::unproject(const Point<double>& point, double scale, L
+     return Projection::unproject(point, scale, wrapMode);
+ }
+ 
+-void MercatorProjection::tileMatrix(mat4& matrix, const UnwrappedTileID& tileID, double scale) const {
++void mercatorTileMatrix(mat4& matrix, const UnwrappedTileID& tileID, double scale) {
+     const uint64_t tileScale = 1ull << tileID.canonical.z;
+     const double s = Projection::worldSize(scale) / tileScale;
+ 
+@@ -26,19 +26,34 @@ void MercatorProjection::tileMatrix(mat4& matrix, const UnwrappedTileID& tileID,
+     matrix::scale(matrix, matrix, s / util::EXTENT, s / util::EXTENT, 1);
+ }
+ 
++vec4 mercatorTileCoords(const UnwrappedTileID& tileID) {
++    const double tileScale = static_cast<double>(1ull << tileID.canonical.z);
++    return {{tileID.canonical.x / tileScale,
++             tileID.canonical.y / tileScale,
++             1.0 / tileScale / util::EXTENT,
++             1.0 / tileScale / util::EXTENT}};
++}
++
++void MercatorProjection::tileMatrix(mat4& matrix, const UnwrappedTileID& tileID, double scale) const {
++    mercatorTileMatrix(matrix, tileID, scale);
++}
++
+ ProjectionData MercatorProjection::getProjectionData(const TransformState&,
+                                                      const UnwrappedTileID& tileID,
+                                                      const mat4& mercatorMatrix) const {
+-    const double tileScale = static_cast<double>(1ull << tileID.canonical.z);
+     return {.mainMatrix = mercatorMatrix,
+-            .tileMercatorCoords = {{tileID.canonical.x / tileScale,
+-                                    tileID.canonical.y / tileScale,
+-                                    1.0 / tileScale / util::EXTENT,
+-                                    1.0 / tileScale / util::EXTENT}},
++            .tileMercatorCoords = mercatorTileCoords(tileID),
+             .clippingPlane = {{0, 0, 0, 0}},
+             .projectionTransition = 0,
+-            .fallbackMatrix = mercatorMatrix,
+-            .clipAntimeridian = false};
++            .fallbackMatrix = mercatorMatrix};
++}
++
++ProjectedTilePoint MercatorProjection::projectTilePoint(const ProjectionData& data,
++                                                        const UnwrappedTileID&,
++                                                        const Point<double>& point) const {
++    vec4 pos = {{point.x, point.y, 0, 1}};
++    matrix::transformMat4(pos, pos, data.mainMatrix);
++    return {.point = {pos[0] / pos[3], pos[1] / pos[3]}, .signedDistanceFromCamera = pos[3], .occluded = false};
+ }
+ 
+ } // namespace mln
+diff --git a/src/mln/map/mercator_projection.hpp b/src/mln/map/mercator_projection.hpp
+index 310b84da82d919938ae4bcd2c583896f0f88a467..1d6c6c541b34f3ef502d3a143186ca5e73aa16f3 100644
+--- a/src/mln/map/mercator_projection.hpp
++++ b/src/mln/map/mercator_projection.hpp
+@@ -14,6 +14,10 @@ public:
+     ProjectionData getProjectionData(const TransformState&,
+                                      const UnwrappedTileID&,
+                                      const mat4& mercatorMatrix) const override;
++
++    ProjectedTilePoint projectTilePoint(const ProjectionData&,
++                                        const UnwrappedTileID&,
++                                        const Point<double>&) const override;
+ };
+ 
+ } // namespace mln
+diff --git a/src/mln/map/projection_base.hpp b/src/mln/map/projection_base.hpp
+index 5232e7da3be4bacfc4dc280ce91c10b6c47282df..ca1f2766857ea424f4882198dd4869c66e5d92df 100644
+--- a/src/mln/map/projection_base.hpp
++++ b/src/mln/map/projection_base.hpp
+@@ -15,11 +15,22 @@ struct ProjectionData {
+     vec4 clippingPlane{};
+     double projectionTransition = 0;
+     mat4 fallbackMatrix{};
+-    bool clipAntimeridian = false;
+     /// Clip-space Z shift for this drawable's layer, the same one the Mercator matrix carries.
+     double depthOffset = 0;
+ };
+ 
++/// A tile point in clip space, as the vertex shaders would place it.
++struct ProjectedTilePoint {
++    Point<double> point;
++    double signedDistanceFromCamera = 0;
++    /// Behind the planet's horizon; never true on Mercator.
++    bool occluded = false;
++};
++
++/// The tile-to-world matrix and the Mercator extent of a tile, the same on every projection.
++void mercatorTileMatrix(mat4&, const UnwrappedTileID&, double scale);
++vec4 mercatorTileCoords(const UnwrappedTileID&);
++
+ class ProjectionBase {
+ public:
+     virtual ~ProjectionBase() = default;
+@@ -33,6 +44,19 @@ public:
+     virtual ProjectionData getProjectionData(const TransformState&,
+                                              const UnwrappedTileID&,
+                                              const mat4& mercatorMatrix) const = 0;
++
++    /// The clip-space position of a tile point, computed the way the vertex shaders do it.
++    virtual ProjectedTilePoint projectTilePoint(const ProjectionData&,
++                                                const UnwrappedTileID&,
++                                                const Point<double>&) const = 0;
++
++    /// Scale that keeps map-aligned circles and pitched text the size they have on Mercator at the map center.
++    virtual double circleRadiusCorrection(const TransformState&) const { return 1.0; }
++
++    /// `circleRadiusCorrection` extended to a point away from the center, by its latitude.
++    virtual double pitchedTextCorrection(const TransformState&, const Point<double>&, const UnwrappedTileID&) const {
++        return 1.0;
++    }
+ };
+ 
+ } // namespace mln
+diff --git a/src/mln/map/tile_projector.hpp b/src/mln/map/tile_projector.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7b84aa9cec558b791857df7d0ea4191e3c99d26
+--- /dev/null
++++ b/src/mln/map/tile_projector.hpp
+@@ -0,0 +1,40 @@
++#pragma once
++
++#include <mln/map/projection_base.hpp>
++#include <mln/map/transform_state.hpp>
++#include <mln/tile/tile_id.hpp>
++
++namespace mln {
++
++/// Projects the points of one tile through the current projection, the way the vertex shaders do it.
++class TileProjector {
++public:
++    TileProjector(const TransformState& state_, const UnwrappedTileID& tileID_)
++        : TileProjector(state_, tileID_, state_.getProjectionData(tileID_)) {}
++
++    TileProjector(const TransformState& state_, const UnwrappedTileID& tileID_, ProjectionData data_)
++        : state(&state_),
++          tileID(tileID_),
++          data(std::move(data_)) {}
++
++    ProjectedTilePoint project(const Point<double>& point) const {
++        return state->getProjection().projectTilePoint(data, tileID, point);
++    }
++
++    double circleRadiusCorrection() const { return state->getProjection().circleRadiusCorrection(*state); }
++
++    double pitchedTextCorrection(const Point<double>& tileAnchor) const {
++        return state->getProjection().pitchedTextCorrection(*state, tileAnchor, tileID);
++    }
++
++    const TransformState& getTransformState() const { return *state; }
++    const UnwrappedTileID& getTileID() const { return tileID; }
++    const ProjectionData& getProjectionData() const { return data; }
++
++private:
++    const TransformState* state;
++    UnwrappedTileID tileID;
++    ProjectionData data;
++};
++
++} // namespace mln
+diff --git a/src/mln/map/transform_state.hpp b/src/mln/map/transform_state.hpp
+index 2ea912ebe5b0a610b0a9a1c24196b49bdf47b131..804efad41fc0e5f8eef9d0b5ac08829a3af3cd7e 100644
+--- a/src/mln/map/transform_state.hpp
++++ b/src/mln/map/transform_state.hpp
+@@ -149,6 +149,7 @@ public:
+     // Matrix
+     void matrixFor(mat4&, const UnwrappedTileID&) const;
+     void getProjMatrix(mat4& matrix, uint16_t nearZ = 1, bool aligned = false) const;
++    const ProjectionBase& getProjection() const { return *projection; }
+     ProjectionData getProjectionData(const UnwrappedTileID&, const mat4& projMatrix) const;
+     ProjectionData getProjectionData(const UnwrappedTileID&) const;
+     ProjectionData getProjectionDataForMatrix(const UnwrappedTileID&, const mat4& mercatorMatrix) const;
+diff --git a/src/mln/map/vertical_perspective_projection.cpp b/src/mln/map/vertical_perspective_projection.cpp
+index 6fef58e53302a69341444fadb1d9a3e159d7ae5d..c0ac7f28c6cd9d96c7cf3800615a3d2f7c761fa7 100644
+--- a/src/mln/map/vertical_perspective_projection.cpp
++++ b/src/mln/map/vertical_perspective_projection.cpp
+@@ -121,16 +121,7 @@ LatLng VerticalPerspectiveProjection::unproject(const Point<double>& point,
+ }
+ 
+ void VerticalPerspectiveProjection::tileMatrix(mat4& matrix, const UnwrappedTileID& tileID, double scale) const {
+-    const uint64_t tileScale = 1ull << tileID.canonical.z;
+-    const double s = Projection::worldSize(scale) / tileScale;
+-
+-    matrix::identity(matrix);
+-    matrix::translate(matrix,
+-                      matrix,
+-                      static_cast<int64_t>(tileID.canonical.x + tileID.wrap * static_cast<int64_t>(tileScale)) * s,
+-                      static_cast<int64_t>(tileID.canonical.y) * s,
+-                      0);
+-    matrix::scale(matrix, matrix, s / util::EXTENT, s / util::EXTENT, 1);
++    mercatorTileMatrix(matrix, tileID, scale);
+ }
+ 
+ double VerticalPerspectiveProjection::globeRadiusPixels(double worldSize, double centerLatitude) {
+@@ -142,11 +133,13 @@ vec3 VerticalPerspectiveProjection::tileCoordinatesToSphere(const Point<double>&
+     const double scale = 1.0 / static_cast<double>(1ull << tileID.canonical.z);
+     const double mercatorX = tilePoint.x / util::EXTENT * scale + tileID.canonical.x * scale;
+     const double mercatorY = tilePoint.y / util::EXTENT * scale + tileID.canonical.y * scale;
+-    const double sphericalX = std::fmod(mercatorX * std::numbers::pi * 2.0 + std::numbers::pi, std::numbers::pi * 2.0);
+-    const double sphericalY = 2.0 * std::atan(std::exp(std::numbers::pi - (mercatorY * std::numbers::pi * 2.0))) -
+-                              std::numbers::pi * 0.5;
+-    const double len = std::cos(sphericalY);
+-    return {{std::sin(sphericalX) * len, std::sin(sphericalY), std::cos(sphericalX) * len}};
++    const double sphericalX = mercatorX * std::numbers::pi * 2.0 + std::numbers::pi;
++    // sin/cos of the latitude from the Mercator Y through the tangent half-angle identities, as the shaders do.
++    const double t = std::exp(std::numbers::pi - (mercatorY * std::numbers::pi * 2.0));
++    const double t2 = t * t;
++    const double sinY = (t2 - 1.0) / (t2 + 1.0);
++    const double cosY = (2.0 * t) / (t2 + 1.0);
++    return {{std::sin(sphericalX) * cosY, sinY, std::cos(sphericalX) * cosY}};
+ }
+ 
+ mat4 VerticalPerspectiveProjection::globeViewProjectionMatrix(const TransformState& state, double radius) {
+@@ -338,16 +331,36 @@ double VerticalPerspectiveProjection::zoomAdjustment(double fromLatitude, double
+ ProjectionData VerticalPerspectiveProjection::getProjectionData(const TransformState& state,
+                                                                 const UnwrappedTileID& tileID,
+                                                                 const mat4& mercatorMatrix) const {
+-    const double tileScale = static_cast<double>(1ull << tileID.canonical.z);
+     return {.mainMatrix = state.getGlobeViewProjectionMatrix(),
+-            .tileMercatorCoords = {{tileID.canonical.x / tileScale,
+-                                    tileID.canonical.y / tileScale,
+-                                    1.0 / tileScale / util::EXTENT,
+-                                    1.0 / tileScale / util::EXTENT}},
++            .tileMercatorCoords = mercatorTileCoords(tileID),
+             .clippingPlane = state.getGlobeClippingPlane(),
+             .projectionTransition = state.getProjectionTransition(),
+-            .fallbackMatrix = mercatorMatrix,
+-            .clipAntimeridian = tileID.canonical.z == 0};
++            .fallbackMatrix = mercatorMatrix};
++}
++
++ProjectedTilePoint VerticalPerspectiveProjection::projectTilePoint(const ProjectionData& data,
++                                                                   const UnwrappedTileID& tileID,
++                                                                   const Point<double>& point) const {
++    const vec3 sphere = tileCoordinatesToSphere(point, tileID);
++    vec4 pos = {{sphere[0], sphere[1], sphere[2], 1}};
++    matrix::transformMat4(pos, pos, data.mainMatrix);
++    const auto& plane = data.clippingPlane;
++    const double side = plane[0] * sphere[0] + plane[1] * sphere[1] + plane[2] * sphere[2] + plane[3];
++    return {.point = {pos[0] / pos[3], pos[1] / pos[3]}, .signedDistanceFromCamera = pos[3], .occluded = side < 0.0};
++}
++
++double VerticalPerspectiveProjection::circleRadiusCorrection(const TransformState& state) const {
++    return std::cos(util::deg2rad(state.getLatLng().latitude()));
++}
++
++double VerticalPerspectiveProjection::pitchedTextCorrection(const TransformState& state,
++                                                            const Point<double>& tileAnchor,
++                                                            const UnwrappedTileID& tileID) const {
++    const double scale = 1.0 / static_cast<double>(1ull << tileID.canonical.z);
++    const double mercatorY = tileAnchor.y / util::EXTENT * scale + tileID.canonical.y * scale;
++    const double latitude = 2.0 * std::atan(std::exp(std::numbers::pi - (mercatorY * std::numbers::pi * 2.0))) -
++                            std::numbers::pi * 0.5;
++    return circleRadiusCorrection(state) / std::cos(latitude);
+ }
+ 
+ } // namespace mln
+diff --git a/src/mln/map/vertical_perspective_projection.hpp b/src/mln/map/vertical_perspective_projection.hpp
+index be97ada86f48aeb01dcb89efbd72514c80ce5429..952aa56a3d8b22b19803bb13255c011d5fbacabb 100644
+--- a/src/mln/map/vertical_perspective_projection.hpp
++++ b/src/mln/map/vertical_perspective_projection.hpp
+@@ -19,6 +19,12 @@ public:
+                                      const UnwrappedTileID&,
+                                      const mat4& mercatorMatrix) const override;
+ 
++    ProjectedTilePoint projectTilePoint(const ProjectionData&,
++                                        const UnwrappedTileID&,
++                                        const Point<double>&) const override;
++    double circleRadiusCorrection(const TransformState&) const override;
++    double pitchedTextCorrection(const TransformState&, const Point<double>&, const UnwrappedTileID&) const override;
++
+     /// Globe radius in pixels at the given world size and center latitude, so zoom means the same on both projections.
+     static double globeRadiusPixels(double worldSize, double centerLatitude);
+ 
+diff --git a/src/mln/renderer/layer_tweaker.cpp b/src/mln/renderer/layer_tweaker.cpp
+index 848670edeb65190970e9182ebfeb738a488c0506..8b3be67627c51232422ae98b7175631e6ff74b23 100644
+--- a/src/mln/renderer/layer_tweaker.cpp
++++ b/src/mln/renderer/layer_tweaker.cpp
+@@ -104,6 +104,12 @@ shaders::ProjectionUBO LayerTweaker::toProjectionUBO(const ProjectionData& data)
+             .pad2 = 0};
+ }
+ 
++float LayerTweaker::globeExtrudeScale(const UnwrappedTileID& tileID, float zoom, double latitudeScale) {
++    return static_cast<float>(tileID.pixelsToTileUnits(1.0f, zoom) /
++                              (util::EXTENT * static_cast<double>(1ull << tileID.canonical.z)) * util::M2PI *
++                              latitudeScale);
++}
++
+ #if MLN_UBO_CONSOLIDATION
+ void LayerTweaker::uploadProjectionUBOs(gfx::UniformBufferArray& layerUniforms,
+                                         const std::vector<shaders::ProjectionUBO>& ubos,
+diff --git a/src/mln/renderer/layers/render_symbol_layer.cpp b/src/mln/renderer/layers/render_symbol_layer.cpp
+index 3e3d63b2a0d9c1df16f6ba8e1353dce28d5ef8f8..2d4981d3554ebda8661ef351b8e59058e74b5e25 100644
+--- a/src/mln/renderer/layers/render_symbol_layer.cpp
++++ b/src/mln/renderer/layers/render_symbol_layer.cpp
+@@ -586,18 +586,27 @@ void RenderSymbolLayer::captureRenderedFeatures(const RenderTile& tile,
+         const auto u_size = evaluatedSize.size;
+         const auto u_size_t = evaluatedSize.sizeT;
+ 
+-        const mat4 textLabelPlaneMatrix =
+-            (alongLine || hasVariablePlacement)
+-                ? matrix::identity4()
+-                : getLabelPlaneMatrix(textDrawableMatrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
+-        const mat4 iconLabelPlaneMatrix =
+-            (alongLine || hasVariablePlacement)
+-                ? matrix::identity4()
+-                : getLabelPlaneMatrix(iconDrawableMatrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
+-        const mat4 textGLCoordMatrix = getGlCoordMatrix(
+-            textDrawableMatrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
+-        const mat4 iconGLCoordMatrix = getGlCoordMatrix(
+-            iconDrawableMatrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
++        // Viewport labels reach the label plane through the tile matrix; pitched labels leave it through the same.
++        const auto labelPlaneMatrixFor = [&](const mat4& drawableMatrix) {
++            mat4 m = getLabelPlaneMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
++            if (!pitchWithMap) {
++                matrix::multiply(m, m, drawableMatrix);
++            }
++            return m;
++        };
++        const auto glCoordMatrixFor = [&](const mat4& drawableMatrix) {
++            mat4 m = getGlCoordMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
++            if (pitchWithMap) {
++                matrix::multiply(m, drawableMatrix, m);
++            }
++            return m;
++        };
++        const mat4 textLabelPlaneMatrix = (alongLine || hasVariablePlacement) ? matrix::identity4()
++                                                                              : labelPlaneMatrixFor(textDrawableMatrix);
++        const mat4 iconLabelPlaneMatrix = (alongLine || hasVariablePlacement) ? matrix::identity4()
++                                                                              : labelPlaneMatrixFor(iconDrawableMatrix);
++        const mat4 textGLCoordMatrix = glCoordMatrixFor(textDrawableMatrix);
++        const mat4 iconGLCoordMatrix = glCoordMatrixFor(iconDrawableMatrix);
+ 
+         const bool rotateInShader = rotateWithMap && !pitchWithMap && !alongLine;
+ 
+@@ -760,6 +769,7 @@ void RenderSymbolLayer::update(gfx::ShaderRegistry& shaders,
+                                const PaintParameters&,
+                                const RenderTree& renderTree,
+                                UniqueChangeRequestVec& changes) {
++    updateProjectionVariant(state);
+     stats.renderedFeatures.clear();
+ 
+     if (!renderTiles || renderTiles->empty() || passes == RenderPass::None) {
+@@ -1142,7 +1152,7 @@ void RenderSymbolLayer::update(gfx::ShaderRegistry& shaders,
+             }
+ 
+             const auto shader = std::static_pointer_cast<gfx::ShaderProgramBase>(
+-                shaderGroup->getOrCreateShader(context, propertiesAsUniforms, posOffsetAttribName));
++                shaderGroup->getOrCreateShader(context, propertiesAsUniforms, posOffsetAttribName, projectionVariant));
+             if (!shader) {
+                 return;
+             }
+diff --git a/src/mln/renderer/layers/symbol_layer_tweaker.cpp b/src/mln/renderer/layers/symbol_layer_tweaker.cpp
+index b5d03e98aaee0310ee9609da88723a7e1ad55287..9773f32a95e678947c610a4772fa7278402668c0 100644
+--- a/src/mln/renderer/layers/symbol_layer_tweaker.cpp
++++ b/src/mln/renderer/layers/symbol_layer_tweaker.cpp
+@@ -16,6 +16,7 @@
+ #include <mln/shaders/symbol_layer_ubo.hpp>
+ #include <mln/style/layers/symbol_layer_properties.hpp>
+ #include <mln/util/convert.hpp>
++#include <mln/util/math.hpp>
+ #include <mln/util/std.hpp>
+ 
+ #if MLN_RENDER_BACKEND_METAL
+@@ -160,9 +161,22 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
+                                           (isText || symbolData.textFit != IconTextFitType::None);
+         const mat4 labelPlaneMatrix = (alongLine || hasVariablePlacement)
+                                           ? matrix::identity4()
+-                                          : getLabelPlaneMatrix(
+-                                                matrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
+-        const mat4 glCoordMatrix = getGlCoordMatrix(matrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
++                                          : getLabelPlaneMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
++        const mat4 glCoordMatrix = getGlCoordMatrix(pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
++
++        // On the globe the main matrix is untranslated and the shader adds the translation in tile units;
++        // on Mercator it stays baked into the matrix.
++        std::array<float, 2> tileTranslation = {0.f, 0.f};
++        if (state.isGlobeRendering() && !isScreenSpace && (translate[0] != 0 || translate[1] != 0)) {
++            const auto anchor = isText ? evaluated.get<style::TextTranslateAnchor>()
++                                       : evaluated.get<style::IconTranslateAnchor>();
++            const float angle = anchor == TranslateAnchorType::Viewport ? static_cast<float>(-state.getBearing())
++                                                                        : 0.0f;
++            const Point<float> rotated = util::rotate(Point<float>{translate[0], translate[1]}, angle);
++            tileTranslation = {tileID.pixelsToTileUnits(rotated.x, currentZoom),
++                               tileID.pixelsToTileUnits(rotated.y, currentZoom)};
++        }
++        const auto pitchedScale = static_cast<float>(state.getProjection().circleRadiusCorrection(state));
+ 
+         const float gammaScale = (symbolData.pitchAlignment == AlignmentType::Map
+                                       ? static_cast<float>(std::cos(state.getPitch())) * camDist
+@@ -203,6 +217,13 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
+             .opacity_t = getInterpFactor<TextOpacity, IconOpacity, 0>(paintProperties, isText, zoom),
+             .halo_width_t = getInterpFactor<TextHaloWidth, IconHaloWidth, 0>(paintProperties, isText, zoom),
+             .halo_blur_t = getInterpFactor<TextHaloBlur, IconHaloBlur, 0>(paintProperties, isText, zoom),
++
++            .is_along_line = alongLine,
++            .is_variable_anchor = hasVariablePlacement,
++            .pitched_scale = pitchedScale,
++            .translation = tileTranslation,
++            .pad1 = 0,
++            .pad2 = 0,
+         };
+ 
+ #if MLN_UBO_CONSOLIDATION
+diff --git a/src/mln/renderer/render_layer.cpp b/src/mln/renderer/render_layer.cpp
+index d5dea22b763b0fd8d81752e020ea99e74aef7352..5c3e9d5dfaa117a7f1da9d493e334330997a2ef2 100644
+--- a/src/mln/renderer/render_layer.cpp
++++ b/src/mln/renderer/render_layer.cpp
+@@ -1,4 +1,5 @@
+ #include <mln/renderer/render_layer.hpp>
++#include <mln/map/transform_state.hpp>
+ 
+ #include <mln/gfx/context.hpp>
+ #include <mln/renderer/layer_group.hpp>
+@@ -152,6 +153,16 @@ std::size_t RenderLayer::removeTile(RenderPass renderPass, const OverscaledTileI
+     return 0;
+ }
+ 
++bool RenderLayer::updateProjectionVariant(const TransformState& state) {
++    const auto variant = state.isGlobeRendering() ? gfx::ProjectionVariant::Globe : gfx::ProjectionVariant::Mercator;
++    if (variant == projectionVariant) {
++        return false;
++    }
++    projectionVariant = variant;
++    removeAllDrawables();
++    return true;
++}
++
+ std::size_t RenderLayer::removeAllDrawables() {
+     if (layerGroup) {
+         const auto count = layerGroup->getDrawableCount();
+diff --git a/src/mln/renderer/render_layer.hpp b/src/mln/renderer/render_layer.hpp
+index 19975d3c7e7716ede09df56de06a0a99c961bfd4..627c28d4b3103d2ed9631e3036fdac1926f4d946 100644
+--- a/src/mln/renderer/render_layer.hpp
++++ b/src/mln/renderer/render_layer.hpp
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include <mln/gfx/drawable.hpp>
++#include <mln/gfx/projection_variant.hpp>
+ #include <mln/layout/layout.hpp>
+ #include <mln/renderer/change_request.hpp>
+ #include <mln/renderer/layer_group.hpp>
+@@ -93,6 +94,9 @@ public:
+ 
+     const std::string& getId() const;
+ 
++    /// The shader variant for the current projection; drawables are rebuilt when it changes.
++    gfx::ProjectionVariant getProjectionVariant() const { return projectionVariant; }
++
+     /// Begin transitions for any properties that have changed since the last frame.
+     virtual void transition(const TransitionParameters&) = 0;
+ 
+@@ -321,6 +325,10 @@ protected:
+ 
+     // will need to be overridden to handle their activation.
+     LayerGroupBasePtr layerGroup;
++    gfx::ProjectionVariant projectionVariant = gfx::ProjectionVariant::Mercator;
++
++    /// Picks the shader variant for the state's projection; returns true and drops the drawables when it changed.
++    bool updateProjectionVariant(const TransformState&);
+ 
+     // An optional tweaker that will update drawables
+     LayerTweakerPtr layerTweaker;
+diff --git a/src/mln/renderer/render_tile.cpp b/src/mln/renderer/render_tile.cpp
+index b88ef8610a4d3faa0cb4cf6e862f6fc658ae823c..6a6cee2b3d208d027512c3928197eca593603faa 100644
+--- a/src/mln/renderer/render_tile.cpp
++++ b/src/mln/renderer/render_tile.cpp
+@@ -135,7 +135,8 @@ void RenderTile::prepare(const SourcePrepareParameters& parameters) {
+     // nearClippedMatrix has near plane moved further, to enhance depth buffer
+     // precision
+     const auto& transform = parameters.transform;
+-    matrix = transform.state.getProjectionData(id, transform.projMatrix).mainMatrix;
++    projection = transform.state.getProjectionData(id, transform.projMatrix);
++    matrix = projection.mainMatrix;
+     nearClippedMatrix = transform.state.isGlobeRendering()
+                             ? matrix
+                             : transform.state.getProjectionData(id, transform.nearClippedProjMatrix).mainMatrix;
+diff --git a/src/mln/renderer/render_tile.hpp b/src/mln/renderer/render_tile.hpp
+index e40a9d4a83a7510112e12049241849ce1ef7e2c8..d97f482f938fb339cdda2ce49ba3711e22b5ba49 100644
+--- a/src/mln/renderer/render_tile.hpp
++++ b/src/mln/renderer/render_tile.hpp
+@@ -2,6 +2,7 @@
+ 
+ #include <mln/map/mode.hpp>
+ #include <mln/tile/tile_id.hpp>
++#include <mln/map/projection_base.hpp>
+ #include <mln/util/mat4.hpp>
+ #include <mln/style/image_impl.hpp>
+ #include <mln/style/layer_impl.hpp>
+@@ -39,6 +40,8 @@ public:
+     RenderTile& operator=(const RenderTile&) = delete;
+ 
+     UnwrappedTileID id;
++    /// The projection contract for this tile; `matrix` is its main matrix.
++    ProjectionData projection;
+     mat4 matrix;
+     mat4 nearClippedMatrix;
+     // Contains the tile ID string for painting debug information.
+diff --git a/src/mln/shaders/gl/shader_info.cpp b/src/mln/shaders/gl/shader_info.cpp
+index 0f972835807f93b0250edc9b1978cdc2cddffa9b..be6bc4ecc1300ecffa79a780c95b56ac92678b7e 100644
+--- a/src/mln/shaders/gl/shader_info.cpp
++++ b/src/mln/shaders/gl/shader_info.cpp
+@@ -473,6 +473,7 @@ using SymbolIconShaderInfo = ShaderInfo<BuiltIn::SymbolIconShader, gfx::Backend:
+ 
+ const std::vector<UniformBlockInfo> SymbolIconShaderInfo::uniformBlocks = {
+     UniformBlockInfo{"GlobalPaintParamsUBO", idGlobalPaintParamsUBO},
++    UniformBlockInfo{"ProjectionUBO", idProjectionUBO},
+     UniformBlockInfo{"SymbolDrawableUBO", idSymbolDrawableUBO},
+     UniformBlockInfo{"SymbolTilePropsUBO", idSymbolTilePropsUBO},
+     UniformBlockInfo{"SymbolEvaluatedPropsUBO", idSymbolEvaluatedPropsUBO},
+@@ -494,6 +495,7 @@ using SymbolSDFShaderInfo = ShaderInfo<BuiltIn::SymbolSDFShader, gfx::Backend::T
+ 
+ const std::vector<UniformBlockInfo> SymbolSDFShaderInfo::uniformBlocks = {
+     UniformBlockInfo{"GlobalPaintParamsUBO", idGlobalPaintParamsUBO},
++    UniformBlockInfo{"ProjectionUBO", idProjectionUBO},
+     UniformBlockInfo{"SymbolDrawableUBO", idSymbolDrawableUBO},
+     UniformBlockInfo{"SymbolTilePropsUBO", idSymbolTilePropsUBO},
+     UniformBlockInfo{"SymbolEvaluatedPropsUBO", idSymbolEvaluatedPropsUBO},
+@@ -519,6 +521,7 @@ using SymbolTextAndIconShaderInfo = ShaderInfo<BuiltIn::SymbolTextAndIconShader,
+ 
+ const std::vector<UniformBlockInfo> SymbolTextAndIconShaderInfo::uniformBlocks = {
+     UniformBlockInfo{"GlobalPaintParamsUBO", idGlobalPaintParamsUBO},
++    UniformBlockInfo{"ProjectionUBO", idProjectionUBO},
+     UniformBlockInfo{"SymbolDrawableUBO", idSymbolDrawableUBO},
+     UniformBlockInfo{"SymbolTilePropsUBO", idSymbolTilePropsUBO},
+     UniformBlockInfo{"SymbolEvaluatedPropsUBO", idSymbolEvaluatedPropsUBO},
+diff --git a/src/mln/text/collision_index.cpp b/src/mln/text/collision_index.cpp
+index 9641c164e0ef3ecaa764f8db318cd827495c9b4b..55378a5474b62d0814d06c8a5c64ce3cd7d79c0d 100644
+--- a/src/mln/text/collision_index.cpp
++++ b/src/mln/text/collision_index.cpp
+@@ -13,6 +13,8 @@
+ #include <mln/renderer/buckets/symbol_bucket.hpp> // For PlacedSymbol: pull out to another location
+ 
+ #include <cmath>
++#include <limits>
++#include <numbers>
+ 
+ namespace mln {
+ 
+@@ -146,17 +148,18 @@ IntersectStatus CollisionIndex::intersectsTileEdges(const CollisionBox& box,
+     return result;
+ }
+ 
+-std::pair<bool, bool> CollisionIndex::placeFeature(
++PlacedFeatureResult CollisionIndex::placeFeature(
+     const CollisionFeature& feature,
+     Point<float> shift,
+-    const mat4& posMatrix,
+-    const mat4& labelPlaneMatrix,
++    const TileProjector& tileProjector,
++    const LabelPlaneProjector& labelPlane,
+     const float textPixelRatio,
+     const PlacedSymbol& symbol,
+     const float scale,
+     const float fontSize,
+     const bool allowOverlap,
+     const bool pitchWithMap,
++    const bool rotateWithMap,
+     const bool collisionDebug,
+     const std::optional<CollisionBoundaries>& avoidEdges,
+     const std::optional<std::function<bool(const RefIndexedSubfeature&)>>& collisionGroupPredicate,
+@@ -164,19 +167,31 @@ std::pair<bool, bool> CollisionIndex::placeFeature(
+     assert(projectedBoxes.empty());
+     if (!feature.alongLine) {
+         const CollisionBox& box = feature.boxes.front();
+-        auto collisionBoundaries = getProjectedCollisionBoundaries(posMatrix, shift, textPixelRatio, box);
++        const auto projectedPoint = projectAndGetPerspectiveRatio(tileProjector, box.anchor);
++        const float tileToViewport = textPixelRatio * projectedPoint.perspectiveRatio;
++        CollisionBoundaries collisionBoundaries;
++        bool occluded = projectedPoint.occluded;
++        if (transformState.isGlobeRendering() && (pitchWithMap || rotateWithMap)) {
++            const auto projectedBox = projectCollisionBox(
++                box, tileToViewport, scale, tileProjector, pitchWithMap, rotateWithMap, projectedPoint, shift);
++            collisionBoundaries = projectedBox.boundaries;
++            occluded = pitchWithMap ? projectedBox.allPointsOccluded : projectedPoint.occluded;
++        } else {
++            collisionBoundaries = getProjectedCollisionBoundaries(projectedPoint, shift, textPixelRatio, box);
++        }
+         projectedBoxes.emplace_back(
+             collisionBoundaries[0], collisionBoundaries[1], collisionBoundaries[2], collisionBoundaries[3]);
+-        if ((avoidEdges && !isInsideTile(collisionBoundaries, *avoidEdges)) || !isInsideGrid(collisionBoundaries) ||
++        if (occluded || (avoidEdges && !isInsideTile(collisionBoundaries, *avoidEdges)) ||
++            !isInsideGrid(collisionBoundaries) ||
+             (!allowOverlap && collisionGrid.hitTest(projectedBoxes.back().box(), collisionGroupPredicate))) {
+-            return {false, false};
++            return {.placed = false, .offscreen = false, .occluded = occluded};
+         }
+ 
+-        return {true, isOffscreen(collisionBoundaries)};
++        return {.placed = true, .offscreen = isOffscreen(collisionBoundaries), .occluded = false};
+     } else {
+         return placeLineFeature(feature,
+-                                posMatrix,
+-                                labelPlaneMatrix,
++                                tileProjector,
++                                labelPlane,
+                                 textPixelRatio,
+                                 symbol,
+                                 scale,
+@@ -190,10 +205,10 @@ std::pair<bool, bool> CollisionIndex::placeFeature(
+     }
+ }
+ 
+-std::pair<bool, bool> CollisionIndex::placeLineFeature(
++PlacedFeatureResult CollisionIndex::placeLineFeature(
+     const CollisionFeature& feature,
+-    const mat4& posMatrix,
+-    const mat4& labelPlaneMatrix,
++    const TileProjector& tileProjector,
++    const LabelPlaneProjector& labelPlane,
+     const float textPixelRatio,
+     const PlacedSymbol& symbol,
+     const float scale,
+@@ -207,14 +222,25 @@ std::pair<bool, bool> CollisionIndex::placeLineFeature(
+     assert(feature.alongLine);
+     assert(projectedBoxes.empty());
+     const auto tileUnitAnchorPoint = symbol.anchorPoint;
+-    const auto projectedAnchor = projectAnchor(posMatrix, tileUnitAnchorPoint);
++    const auto anchor = projectAndGetPerspectiveRatio(tileProjector, tileUnitAnchorPoint);
++    if (anchor.occluded) {
++        return {.placed = false, .offscreen = false, .occluded = true};
++    }
++    const auto projectedAnchor = std::make_pair(anchor.perspectiveRatio, anchor.signedDistanceFromCamera);
+ 
+-    const float fontScale = fontSize / 24;
+-    const float lineOffsetX = symbol.lineOffset[0] * fontSize;
+-    const float lineOffsetY = symbol.lineOffset[1] * fontSize;
++    const float correctedFontSize = pitchWithMap ? fontSize * static_cast<float>(tileProjector.pitchedTextCorrection(
++                                                                  {tileUnitAnchorPoint.x, tileUnitAnchorPoint.y}))
++                                                 : fontSize;
++    const float fontScale = correctedFontSize / 24;
++    const float lineOffsetX = symbol.lineOffset[0] * correctedFontSize;
++    const float lineOffsetY = symbol.lineOffset[1] * correctedFontSize;
+ 
+-    const auto labelPlaneAnchorPoint = project(tileUnitAnchorPoint, labelPlaneMatrix).first;
++    const auto projectedLabelPlaneAnchor = labelPlane.project(tileUnitAnchorPoint).point;
++    const Point<float> labelPlaneAnchorPoint{static_cast<float>(projectedLabelPlaneAnchor.x),
++                                             static_cast<float>(projectedLabelPlaneAnchor.y)};
+ 
++    LineProjectionCache projections;
++    projections.reset(symbol.line.size());
+     const auto firstAndLastGlyph = placeFirstAndLastGlyph(fontScale,
+                                                           lineOffsetX,
+                                                           lineOffsetY,
+@@ -222,7 +248,8 @@ std::pair<bool, bool> CollisionIndex::placeLineFeature(
+                                                           labelPlaneAnchorPoint,
+                                                           tileUnitAnchorPoint,
+                                                           symbol,
+-                                                          labelPlaneMatrix,
++                                                          labelPlane,
++                                                          projections,
+                                                           /*return tile distance*/ true);
+ 
+     bool collisionDetected = false;
+@@ -264,7 +291,7 @@ std::pair<bool, bool> CollisionIndex::placeLineFeature(
+             continue;
+         }
+ 
+-        const auto projectedPoint = projectPoint(posMatrix, circle.anchor);
++        const auto projectedPoint = projectPoint(tileProjector, circle.anchor);
+         const float tileUnitRadius = (circle.x2 - circle.x1) / 2;
+         const float radius = tileUnitRadius * tileToViewport;
+ 
+@@ -422,24 +449,29 @@ std::unordered_map<uint32_t, std::vector<IndexedSubfeature>> CollisionIndex::que
+     return result;
+ }
+ 
+-std::pair<float, float> CollisionIndex::projectAnchor(const mat4& posMatrix, const Point<float>& point) const {
+-    vec4 p = {{point.x, point.y, 0, 1}};
+-    matrix::transformMat4(p, p, posMatrix);
+-    return std::make_pair(0.5f + 0.5f * (transformState.getCameraToCenterDistance() / static_cast<float>(p[3])),
+-                          static_cast<float>(p[3]));
++CollisionIndex::ProjectedAnchor CollisionIndex::projectAndGetPerspectiveRatio(const TileProjector& tileProjector,
++                                                                              const Point<float>& point) const {
++    return toViewport(tileProjector.project({point.x, point.y}));
+ }
+ 
+-std::pair<Point<float>, float> CollisionIndex::projectAndGetPerspectiveRatio(const mat4& posMatrix,
+-                                                                             const Point<float>& point) const {
+-    vec4 p = {{point.x, point.y, 0, 1}};
+-    matrix::transformMat4(p, p, posMatrix);
+-    auto size = transformState.getSize();
+-    return std::make_pair(Point<float>(static_cast<float>(((p[0] / p[3] + 1) / 2) * size.width + viewportPadding),
+-                                       static_cast<float>(((-p[1] / p[3] + 1) / 2) * size.height + viewportPadding)),
+-                          // See perspective ratio comment in symbol_sdf.vertex
+-                          // We're doing collision detection in viewport space so we need
+-                          // to scale down boxes in the distance
+-                          0.5f + 0.5f * transformState.getCameraToCenterDistance() / static_cast<float>(p[3]));
++CollisionIndex::ProjectedAnchor CollisionIndex::toViewport(const ProjectedTilePoint& projected) const {
++    const auto size = transformState.getSize();
++    const auto distance = static_cast<float>(projected.signedDistanceFromCamera);
++    return {.point = Point<float>(static_cast<float>(((projected.point.x + 1) / 2) * size.width + viewportPadding),
++                                  static_cast<float>(((-projected.point.y + 1) / 2) * size.height + viewportPadding)),
++            // See perspective ratio comment in symbol_sdf.vertex
++            // We're doing collision detection in viewport space so we need
++            // to scale down boxes in the distance
++            .perspectiveRatio = 0.5f + 0.5f * transformState.getCameraToCenterDistance() / distance,
++            .signedDistanceFromCamera = distance,
++            .occluded = projected.occluded};
++}
++
++Point<float> CollisionIndex::projectPoint(const TileProjector& tileProjector, const Point<float>& point) const {
++    const auto projected = tileProjector.project({point.x, point.y});
++    const auto size = transformState.getSize();
++    return Point<float>{static_cast<float>((((projected.point.x + 1) / 2) * size.width) + viewportPadding),
++                        static_cast<float>((((-projected.point.y + 1) / 2) * size.height) + viewportPadding)};
+ }
+ 
+ Point<float> CollisionIndex::projectPoint(const mat4& posMatrix, const Point<float>& point) const {
+@@ -454,14 +486,112 @@ CollisionBoundaries CollisionIndex::getProjectedCollisionBoundaries(const mat4&
+                                                                     Point<float> shift,
+                                                                     float textPixelRatio,
+                                                                     const CollisionBox& box) const {
+-    const auto projectedPoint = projectAndGetPerspectiveRatio(posMatrix, box.anchor);
+-    const float tileToViewport = textPixelRatio * projectedPoint.second;
++    vec4 p = {{box.anchor.x, box.anchor.y, 0, 1}};
++    matrix::transformMat4(p, p, posMatrix);
++    const ProjectedTilePoint projected{
++        .point = {p[0] / p[3], p[1] / p[3]}, .signedDistanceFromCamera = p[3], .occluded = false};
++    return getProjectedCollisionBoundaries(toViewport(projected), shift, textPixelRatio, box);
++}
++
++CollisionBoundaries CollisionIndex::getProjectedCollisionBoundaries(const ProjectedAnchor& projectedPoint,
++                                                                    Point<float> shift,
++                                                                    float textPixelRatio,
++                                                                    const CollisionBox& box) const {
++    const float tileToViewport = textPixelRatio * projectedPoint.perspectiveRatio;
+     return CollisionBoundaries{{
+-        (box.x1 + shift.x) * tileToViewport + projectedPoint.first.x,
+-        (box.y1 + shift.y) * tileToViewport + projectedPoint.first.y,
+-        (box.x2 + shift.x) * tileToViewport + projectedPoint.first.x,
+-        (box.y2 + shift.y) * tileToViewport + projectedPoint.first.y,
++        (box.x1 + shift.x) * tileToViewport + projectedPoint.point.x,
++        (box.y1 + shift.y) * tileToViewport + projectedPoint.point.y,
++        (box.x2 + shift.x) * tileToViewport + projectedPoint.point.x,
++        (box.y2 + shift.y) * tileToViewport + projectedPoint.point.y,
+     }};
+ }
+ 
++CollisionIndex::ProjectedBox CollisionIndex::projectCollisionBox(const CollisionBox& box,
++                                                                 const float tileToViewport,
++                                                                 const float scale,
++                                                                 const TileProjector& tileProjector,
++                                                                 const bool pitchWithMap,
++                                                                 const bool rotateWithMap,
++                                                                 const ProjectedAnchor& projectedPoint,
++                                                                 const Point<float> shift) const {
++    // These vectors hold for screen-space texts aligned with the viewport and for pitched texts aligned with the map.
++    Point<float> vecEast{1, 0};
++    Point<float> vecSouth{0, 1};
++
++    if (rotateWithMap && !pitchWithMap) {
++        // Screen-space texts that stay east-west aligned.
++        const auto projectedEast = projectAndGetPerspectiveRatio(tileProjector, {box.anchor.x + 1, box.anchor.y});
++        const float toEastX = projectedEast.point.x - projectedPoint.point.x;
++        const float toEastY = projectedEast.point.y - projectedPoint.point.y;
++        const float angle = std::atan(toEastY / toEastX) + (toEastX < 0 ? std::numbers::pi_v<float> : 0.f);
++        vecEast = {std::cos(angle), std::sin(angle)};
++        vecSouth = {-std::sin(angle), std::cos(angle)};
++    } else if (!rotateWithMap && pitchWithMap) {
++        // Pitched texts that stay aligned with the viewport's X axis.
++        vec2 east, south;
++        getTileSkewVectors(transformState, east, south);
++        vecEast = {static_cast<float>(east[0]), static_cast<float>(east[1])};
++        vecSouth = {static_cast<float>(south[0]), static_cast<float>(south[1])};
++    }
++
++    Point<float> basePoint = projectedPoint.point;
++    float distanceMultiplier = tileToViewport;
++
++    if (pitchWithMap) {
++        // Offsets are in tile units for pitched boxes.
++        basePoint = box.anchor;
++        distanceMultiplier = static_cast<float>(1.0 / scale *
++                                                tileProjector.pitchedTextCorrection({box.anchor.x, box.anchor.y}));
++        // The shader scales the label by the perspective ratio; variable anchors already account for it.
++        if (shift.x == 0 && shift.y == 0) {
++            const float distanceRatio = projectedPoint.signedDistanceFromCamera /
++                                        transformState.getCameraToCenterDistance();
++            distanceMultiplier *= std::clamp(0.5f + 0.5f * distanceRatio, 0.0f, 4.0f);
++        }
++    }
++
++    basePoint += vecEast * (shift.x * distanceMultiplier) + vecSouth * (shift.y * distanceMultiplier);
++
++    const float xMin = box.x1 * distanceMultiplier;
++    const float xMax = box.x2 * distanceMultiplier;
++    const float xHalf = (xMin + xMax) / 2;
++    const float yMin = box.y1 * distanceMultiplier;
++    const float yMax = box.y2 * distanceMultiplier;
++    const float yHalf = (yMin + yMax) / 2;
++
++    // 0--1--2
++    // |     |
++    // 7     3
++    // |     |
++    // 6--5--4
++    const std::array<Point<float>, 8> offsets = {{{xMin, yMin},
++                                                  {xHalf, yMin},
++                                                  {xMax, yMin},
++                                                  {xMax, yHalf},
++                                                  {xMax, yMax},
++                                                  {xHalf, yMax},
++                                                  {xMin, yMax},
++                                                  {xMin, yHalf}}};
++
++    bool anyPointVisible = !pitchWithMap;
++    CollisionBoundaries bounds = {{std::numeric_limits<float>::infinity(),
++                                   std::numeric_limits<float>::infinity(),
++                                   -std::numeric_limits<float>::infinity(),
++                                   -std::numeric_limits<float>::infinity()}};
++    for (const auto& offset : offsets) {
++        Point<float> point = basePoint + vecEast * offset.x + vecSouth * offset.y;
++        if (pitchWithMap) {
++            const auto projected = projectAndGetPerspectiveRatio(tileProjector, point);
++            anyPointVisible = anyPointVisible || !projected.occluded;
++            point = projected.point;
++        }
++        bounds[0] = std::min(bounds[0], point.x);
++        bounds[1] = std::min(bounds[1], point.y);
++        bounds[2] = std::max(bounds[2], point.x);
++        bounds[3] = std::max(bounds[3], point.y);
++    }
++
++    return {.boundaries = bounds, .allPointsOccluded = !anyPointVisible};
++}
++
+ } // namespace mln
+diff --git a/src/mln/text/collision_index.hpp b/src/mln/text/collision_index.hpp
+index f4635e41503ade826c882599ce1843fa7d2529b6..776729872275b9ace8a84fed6bf24c6a4aeefa00 100644
+--- a/src/mln/text/collision_index.hpp
++++ b/src/mln/text/collision_index.hpp
+@@ -4,6 +4,7 @@
+ 
+ #include <mln/text/collision_feature.hpp>
+ #include <mln/util/grid_index.hpp>
++#include <mln/map/tile_projector.hpp>
+ #include <mln/map/transform_state.hpp>
+ 
+ #include <array>
+@@ -11,9 +12,17 @@
+ namespace mln {
+ 
+ class PlacedSymbol;
++class LabelPlaneProjector;
+ 
+ struct TileDistance;
+ 
++struct PlacedFeatureResult {
++    bool placed = false;
++    bool offscreen = false;
++    /// Behind the planet's horizon: hidden even when overlap is allowed.
++    bool occluded = false;
++};
++
+ using CollisionBoundaries = std::array<float, 4>; // [x1, y1, x2, y2]
+ struct IntersectStatus {
+     enum Flags : uint8_t {
+@@ -35,17 +44,18 @@ public:
+                                         const mat4& posMatrix,
+                                         float textPixelRatio,
+                                         const CollisionBoundaries& tileEdges) const;
+-    std::pair<bool, bool> placeFeature(
++    PlacedFeatureResult placeFeature(
+         const CollisionFeature& feature,
+         Point<float> shift,
+-        const mat4& posMatrix,
+-        const mat4& labelPlaneMatrix,
++        const TileProjector& tileProjector,
++        const LabelPlaneProjector& labelPlane,
+         float textPixelRatio,
+         const PlacedSymbol& symbol,
+         float scale,
+         float fontSize,
+         bool allowOverlap,
+         bool pitchWithMap,
++        bool rotateWithMap,
+         bool collisionDebug,
+         const std::optional<CollisionBoundaries>& avoidEdges,
+         const std::optional<std::function<bool(const RefIndexedSubfeature&)>>& collisionGroupPredicate,
+@@ -72,10 +82,10 @@ private:
+     bool isInsideTile(const CollisionBoundaries& boundaries, const CollisionBoundaries& tileBoundaries) const;
+     bool overlapsTile(const CollisionBoundaries& boundaries, const CollisionBoundaries& tileBoundaries) const;
+ 
+-    std::pair<bool, bool> placeLineFeature(
++    PlacedFeatureResult placeLineFeature(
+         const CollisionFeature& feature,
+-        const mat4& posMatrix,
+-        const mat4& labelPlaneMatrix,
++        const TileProjector& tileProjector,
++        const LabelPlaneProjector& labelPlane,
+         float textPixelRatio,
+         const PlacedSymbol& symbol,
+         float scale,
+@@ -94,14 +104,40 @@ private:
+                                   float cameraToAnchorDistance,
+                                   bool pitchWithMap);
+ 
+-    std::pair<float, float> projectAnchor(const mat4& posMatrix, const Point<float>& point) const;
+-    std::pair<Point<float>, float> projectAndGetPerspectiveRatio(const mat4& posMatrix,
+-                                                                 const Point<float>& point) const;
++    struct ProjectedAnchor {
++        Point<float> point;
++        float perspectiveRatio;
++        float signedDistanceFromCamera;
++        bool occluded;
++    };
++
++    ProjectedAnchor toViewport(const ProjectedTilePoint&) const;
++    ProjectedAnchor projectAndGetPerspectiveRatio(const TileProjector&, const Point<float>& point) const;
+     Point<float> projectPoint(const mat4& posMatrix, const Point<float>& point) const;
++    Point<float> projectPoint(const TileProjector&, const Point<float>& point) const;
+     CollisionBoundaries getProjectedCollisionBoundaries(const mat4& posMatrix,
+                                                         Point<float> shift,
+                                                         float textPixelRatio,
+                                                         const CollisionBox& box) const;
++    CollisionBoundaries getProjectedCollisionBoundaries(const ProjectedAnchor&,
++                                                        Point<float> shift,
++                                                        float textPixelRatio,
++                                                        const CollisionBox& box) const;
++
++    struct ProjectedBox {
++        CollisionBoundaries boundaries;
++        bool allPointsOccluded;
++    };
++    /// Pitched or rotated boxes on the globe: the box outline is sampled at eight points and projected,
++    /// so it foreshortens toward the horizon the way the label does.
++    ProjectedBox projectCollisionBox(const CollisionBox& box,
++                                     float tileToViewport,
++                                     float scale,
++                                     const TileProjector&,
++                                     bool pitchWithMap,
++                                     bool rotateWithMap,
++                                     const ProjectedAnchor& projectedPoint,
++                                     Point<float> shift) const;
+ 
+     const TransformState transformState;
+ 
+diff --git a/src/mln/text/placement.cpp b/src/mln/text/placement.cpp
+index 44569a86ab08d65f3e2f5881b78ff7dc2d6e66e1..841d9bbe6cbac1e15ab64fe2bcf1e9dd7006607b 100644
+--- a/src/mln/text/placement.cpp
++++ b/src/mln/text/placement.cpp
+@@ -107,13 +107,9 @@ public:
+     bool pitchIconWithMap = getLayout().get<IconPitchAlignment>() == AlignmentType::Map;
+     SymbolPlacementType placementType = getLayout().get<SymbolPlacement>();
+ 
+-    mat4 textLabelPlaneMatrix = getLabelPlaneMatrix(
+-        renderTile.get().matrix, pitchTextWithMap, rotateTextWithMap, state, pixelsToTileUnits);
+-    mat4 iconLabelPlaneMatrix =
+-        (rotateTextWithMap == rotateIconWithMap && pitchTextWithMap == pitchIconWithMap)
+-            ? textLabelPlaneMatrix
+-            : getLabelPlaneMatrix(
+-                  renderTile.get().matrix, pitchIconWithMap, rotateIconWithMap, state, pixelsToTileUnits);
++    TileProjector tileProjector{state, renderTile.get().id, renderTile.get().projection};
++    LabelPlaneProjector textLabelPlane{tileProjector, pitchTextWithMap, rotateTextWithMap, pixelsToTileUnits};
++    LabelPlaneProjector iconLabelPlane{tileProjector, pitchIconWithMap, rotateIconWithMap, pixelsToTileUnits};
+ 
+     CollisionGroups::CollisionGroup collisionGroup;
+     ZoomEvaluatedSize partiallyEvaluatedTextSize;
+@@ -278,6 +274,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+     }
+     const SymbolBucket& bucket = ctx.getBucket();
+     const mat4& posMatrix = ctx.getRenderTile().matrix;
++    const TileProjector& tileProjector = ctx.tileProjector;
+     const auto& collisionGroup = ctx.collisionGroup;
+     auto variableTextAnchors = symbolInstance.getTextAnchors();
+     textBoxes.clear();
+@@ -286,9 +283,10 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+     bool placeText = false;
+     bool placeIcon = false;
+     bool offscreen = true;
+-    std::pair<bool, bool> placed{false, false};
+-    std::pair<bool, bool> placedVerticalText{false, false};
+-    std::pair<bool, bool> placedVerticalIcon{false, false};
++    bool iconOccluded = false;
++    PlacedFeatureResult placed;
++    PlacedFeatureResult placedVerticalText;
++    PlacedFeatureResult placedVerticalIcon;
+     Point<float> shift{0.0f, 0.0f};
+     std::optional<size_t> horizontalTextIndex = symbolInstance.getDefaultHorizontalPlacedTextIndex();
+     if (horizontalTextIndex) {
+@@ -314,7 +312,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+                         placed = placeHorizontalFn();
+                     }
+ 
+-                    if (placed.first) {
++                    if (placed.placed) {
+                         break;
+                     }
+                 }
+@@ -330,19 +328,20 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+                 textBoxes.clear();
+                 auto placedFeature = collisionIndex.placeFeature(collisionFeature,
+                                                                  {},
+-                                                                 posMatrix,
+-                                                                 ctx.textLabelPlaneMatrix,
++                                                                 tileProjector,
++                                                                 ctx.textLabelPlane,
+                                                                  ctx.pixelRatio,
+                                                                  placedSymbol,
+                                                                  ctx.scale,
+                                                                  fontSize,
+                                                                  ctx.textAllowOverlap,
+                                                                  ctx.pitchTextWithMap,
++                                                                 ctx.rotateTextWithMap,
+                                                                  showCollisionBoxes,
+                                                                  ctx.avoidEdges,
+                                                                  collisionGroup.second,
+                                                                  textBoxes);
+-                if (placedFeature.first) {
++                if (placedFeature.placed) {
+                     placedOrientations.emplace(symbolInstance.getCrossTileID(), orientation);
+                 }
+                 return placedFeature;
+@@ -357,14 +356,14 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+                     return placeFeature(*symbolInstance.getVerticalTextCollisionFeature(),
+                                         style::TextWritingModeType::Vertical);
+                 }
+-                return std::pair<bool, bool>{false, false};
++                return PlacedFeatureResult{};
+             };
+ 
+             placeTextForPlacementModes(placeHorizontal, placeVertical);
+-            updatePreviousOrientationIfNotPlaced(placed.first);
++            updatePreviousOrientationIfNotPlaced(placed.placed);
+ 
+-            placeText = placed.first;
+-            offscreen &= placed.second;
++            placeText = placed.placed;
++            offscreen &= placed.offscreen;
+         } else if (!symbolInstance.getTextCollisionFeature().alongLine &&
+                    !symbolInstance.getTextCollisionFeature().boxes.empty()) {
+             // If this symbol was in the last placement, shift the previously
+@@ -398,7 +397,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+                 const float width = textBox.x2 - textBox.x1;
+                 const float height = textBox.y2 - textBox.y1;
+                 const float textBoxScale = symbolInstance.getTextBoxScale();
+-                std::pair<bool, bool> placedFeature = {false, false};
++                PlacedFeatureResult placedFeature;
+                 const size_t anchorsSize = variableTextAnchors.size();
+                 const size_t placementAttempts = ctx.textAllowOverlap ? anchorsSize * 2 : anchorsSize;
+                 for (size_t i = 0u; i < placementAttempts; ++i) {
+@@ -424,14 +423,15 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+ 
+                     placedFeature = collisionIndex.placeFeature(textCollisionFeature,
+                                                                 shift,
+-                                                                posMatrix,
+-                                                                mat4(),
++                                                                tileProjector,
++                                                                ctx.textLabelPlane,
+                                                                 ctx.pixelRatio,
+                                                                 placedSymbol,
+                                                                 ctx.scale,
+                                                                 fontSize,
+                                                                 allowOverlap,
+                                                                 ctx.pitchTextWithMap,
++                                                                ctx.rotateTextWithMap,
+                                                                 showCollisionBoxes,
+                                                                 ctx.avoidEdges,
+                                                                 collisionGroup.second,
+@@ -441,23 +441,24 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+                         auto placedIconFeature = collisionIndex.placeFeature(
+                             iconCollisionFeature,
+                             shift,
+-                            posMatrix,
+-                            ctx.iconLabelPlaneMatrix,
++                            tileProjector,
++                            ctx.iconLabelPlane,
+                             ctx.pixelRatio,
+                             placedSymbol,
+                             ctx.scale,
+                             fontSize,
+                             ctx.iconAllowOverlap,
+                             ctx.pitchTextWithMap, // TODO: shall it be pitchIconWithMap?
++                            ctx.rotateIconWithMap,
+                             showCollisionBoxes,
+                             ctx.avoidEdges,
+                             collisionGroup.second,
+                             iconBoxes);
+                         iconBoxes.clear();
+-                        if (!placedIconFeature.first) continue;
++                        if (!placedIconFeature.placed) continue;
+                     }
+ 
+-                    if (placedFeature.first) {
++                    if (placedFeature.placed) {
+                         assert(symbolInstance.getCrossTileID() != 0u);
+                         std::optional<style::TextVariableAnchorType> prevAnchor;
+ 
+@@ -499,7 +500,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+             };
+ 
+             const auto placeVertical = [&] {
+-                if (bucket.allowVerticalPlacement && !placed.first &&
++                if (bucket.allowVerticalPlacement && !placed.placed &&
+                     symbolInstance.getVerticalTextCollisionFeature()) {
+                     return placeFeatureForVariableAnchors(*symbolInstance.getVerticalTextCollisionFeature(),
+                                                           style::TextWritingModeType::Vertical,
+@@ -507,15 +508,15 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+                                                               ? *symbolInstance.getVerticalTextCollisionFeature()
+                                                               : symbolInstance.getIconCollisionFeature());
+                 }
+-                return std::pair<bool, bool>{false, false};
++                return PlacedFeatureResult{};
+             };
+ 
+             placeTextForPlacementModes(placeHorizontal, placeVertical);
+ 
+-            placeText = placed.first;
+-            offscreen &= placed.second;
++            placeText = placed.placed;
++            offscreen &= placed.offscreen;
+ 
+-            updatePreviousOrientationIfNotPlaced(placed.first);
++            updatePreviousOrientationIfNotPlaced(placed.placed);
+ 
+             // If we didn't get placed, we still need to copy our position from
+             // the last placement for fade animations
+@@ -539,28 +540,30 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+         const auto& placeIconFeature = [&](const CollisionFeature& collisionFeature) {
+             return collisionIndex.placeFeature(collisionFeature,
+                                                shift,
+-                                               posMatrix,
+-                                               ctx.iconLabelPlaneMatrix,
++                                               tileProjector,
++                                               ctx.iconLabelPlane,
+                                                ctx.pixelRatio,
+                                                placedSymbol,
+                                                ctx.scale,
+                                                fontSize,
+                                                ctx.iconAllowOverlap,
+                                                ctx.pitchTextWithMap,
++                                               ctx.rotateIconWithMap,
+                                                showCollisionBoxes,
+                                                ctx.avoidEdges,
+                                                collisionGroup.second,
+                                                iconBoxes);
+         };
+ 
+-        std::pair<bool, bool> placedIcon;
+-        if (placedVerticalText.first && symbolInstance.getVerticalIconCollisionFeature()) {
++        PlacedFeatureResult placedIcon;
++        if (placedVerticalText.placed && symbolInstance.getVerticalIconCollisionFeature()) {
+             placedIcon = placedVerticalIcon = placeIconFeature(*symbolInstance.getVerticalIconCollisionFeature());
+         } else {
+             placedIcon = placeIconFeature(symbolInstance.getIconCollisionFeature());
+         }
+-        placeIcon = placedIcon.first;
+-        offscreen &= placedIcon.second;
++        placeIcon = placedIcon.placed;
++        iconOccluded = placedIcon.occluded;
++        offscreen &= placedIcon.offscreen;
+     }
+ 
+     const bool iconWithoutText = !symbolInstance.hasText() || ctx.getLayout().get<TextOptional>();
+@@ -576,7 +579,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+     }
+ 
+     if (placeText) {
+-        if (placedVerticalText.first && symbolInstance.getVerticalTextCollisionFeature()) {
++        if (placedVerticalText.placed && symbolInstance.getVerticalTextCollisionFeature()) {
+             collisionIndex.insertFeature(*symbolInstance.getVerticalTextCollisionFeature(),
+                                          textBoxes,
+                                          ctx.getLayout().get<TextIgnorePlacement>(),
+@@ -592,7 +595,7 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+     }
+ 
+     if (placeIcon) {
+-        if (placedVerticalIcon.first && symbolInstance.getVerticalIconCollisionFeature()) {
++        if (placedVerticalIcon.placed && symbolInstance.getVerticalIconCollisionFeature()) {
+             collisionIndex.insertFeature(*symbolInstance.getVerticalIconCollisionFeature(),
+                                          iconBoxes,
+                                          ctx.getLayout().get<IconIgnorePlacement>(),
+@@ -635,8 +638,10 @@ JointPlacement Placement::placeSymbol(const SymbolInstance& symbolInstance, cons
+         return kUnplaced;
+     }
+ 
+-    JointPlacement result(
+-        placeText || ctx.alwaysShowText, placeIcon || ctx.alwaysShowIcon, offscreen || bucket.justReloaded);
++    // Symbols behind the planet's horizon stay hidden even when overlap is allowed.
++    JointPlacement result((placeText || ctx.alwaysShowText) && !placed.occluded,
++                          (placeIcon || ctx.alwaysShowIcon) && !iconOccluded,
++                          offscreen || bucket.justReloaded);
+     placements.emplace(symbolInstance.getCrossTileID(), result);
+     newSymbolPlaced(symbolInstance, ctx, result, ctx.placementType, textBoxes, iconBoxes);
+     return result;
+@@ -784,6 +789,7 @@ bool Placement::updateBucketDynamicAttributeData(SymbolBucket& bucket,
+                                    (bucket.allowVerticalPlacement || hasVariableAnchors) &&
+                                    (bucket.hasIconData() || bucket.hasSdfIconData());
+     bool result = false;
++    const TileProjector tileProjector(state, tile.id, tile.projection);
+ 
+     if (alongLine) {
+         if (layout.get<IconRotationAlignment>() == AlignmentType::Map) {
+@@ -792,7 +798,7 @@ bool Placement::updateBucketDynamicAttributeData(SymbolBucket& bucket,
+             if (bucket.hasSdfIconData()) {
+                 reprojectLineLabels(bucket.sdfIcon.dynamicAttributeData(),
+                                     bucket.sdfIcon.placedSymbols,
+-                                    tile.matrix,
++                                    tileProjector,
+                                     pitchWithMap,
+                                     true /*rotateWithMap*/,
+                                     keepUpright,
+@@ -804,7 +810,7 @@ bool Placement::updateBucketDynamicAttributeData(SymbolBucket& bucket,
+             if (bucket.hasIconData()) {
+                 reprojectLineLabels(bucket.icon.dynamicAttributeData(),
+                                     bucket.icon.placedSymbols,
+-                                    tile.matrix,
++                                    tileProjector,
+                                     pitchWithMap,
+                                     true /*rotateWithMap*/,
+                                     keepUpright,
+@@ -820,7 +826,7 @@ bool Placement::updateBucketDynamicAttributeData(SymbolBucket& bucket,
+             const bool keepUpright = layout.get<style::TextKeepUpright>();
+             reprojectLineLabels(bucket.text.dynamicAttributeData(),
+                                 bucket.text.placedSymbols,
+-                                tile.matrix,
++                                tileProjector,
+                                 pitchWithMap,
+                                 true /*rotateWithMap*/,
+                                 keepUpright,
+@@ -839,8 +845,7 @@ bool Placement::updateBucketDynamicAttributeData(SymbolBucket& bucket,
+         const bool rotateWithMap = layout.get<TextRotationAlignment>() == AlignmentType::Map;
+         const bool pitchWithMap = layout.get<TextPitchAlignment>() == AlignmentType::Map;
+         const float pixelsToTileUnits = tile.id.pixelsToTileUnits(1.0f, static_cast<float>(state.getZoom()));
+-        const auto labelPlaneMatrix = getLabelPlaneMatrix(
+-            tile.matrix, pitchWithMap, rotateWithMap, state, pixelsToTileUnits);
++        const LabelPlaneProjector labelPlane(tileProjector, pitchWithMap, rotateWithMap, pixelsToTileUnits);
+         std::unordered_map<std::size_t, std::pair<std::size_t, Point<float>>> placedTextShifts;
+ 
+         for (std::size_t i = 0; i < bucket.text.placedSymbols.size(); ++i) {
+@@ -862,9 +867,12 @@ bool Placement::updateBucketDynamicAttributeData(SymbolBucket& bucket,
+                 hideGlyphs(symbol.glyphOffsets.size(), bucket.text.dynamicAttributeData());
+             } else {
+                 const Point<float> tileAnchor = symbol.anchorPoint;
+-                const auto projectedAnchor = project(tileAnchor, pitchWithMap ? tile.matrix : labelPlaneMatrix);
+-                const float perspectiveRatio = 0.5f +
+-                                               0.5f * (state.getCameraToCenterDistance() / projectedAnchor.second);
++                const ProjectedTilePoint projected = pitchWithMap ? labelPlane.toClipSpaceFromTile(tileAnchor)
++                                                                  : labelPlane.project(tileAnchor);
++                const Point<float> projectedAnchor{static_cast<float>(projected.point.x),
++                                                   static_cast<float>(projected.point.y)};
++                const float perspectiveRatio = 0.5f + 0.5f * (state.getCameraToCenterDistance() /
++                                                              static_cast<float>(projected.signedDistanceFromCamera));
+                 float renderTextSize = evaluateSizeForFeature(partiallyEvaluatedSize, symbol) * perspectiveRatio /
+                                        util::ONE_EM;
+                 if (pitchWithMap) {
+@@ -886,14 +894,18 @@ bool Placement::updateBucketDynamicAttributeData(SymbolBucket& bucket,
+                 // plane.
+                 Point<float> shiftedAnchor;
+                 if (pitchWithMap) {
+-                    shiftedAnchor =
+-                        project(Point<float>(tileAnchor.x + shift.x, tileAnchor.y + shift.y), labelPlaneMatrix).first;
++                    const auto correction = static_cast<float>(
++                        tileProjector.pitchedTextCorrection({tileAnchor.x, tileAnchor.y}));
++                    const auto shifted = labelPlane
++                                             .project(Point<float>(tileAnchor.x + shift.x * correction,
++                                                                   tileAnchor.y + shift.y * correction))
++                                             .point;
++                    shiftedAnchor = Point<float>(static_cast<float>(shifted.x), static_cast<float>(shifted.y));
+                 } else if (rotateWithMap) {
+                     auto rotated = util::rotate(shift, -state.getPitch());
+-                    shiftedAnchor = Point<float>(projectedAnchor.first.x + rotated.x,
+-                                                 projectedAnchor.first.y + rotated.y);
++                    shiftedAnchor = Point<float>(projectedAnchor.x + rotated.x, projectedAnchor.y + rotated.y);
+                 } else {
+-                    shiftedAnchor = Point<float>(projectedAnchor.first.x + shift.x, projectedAnchor.first.y + shift.y);
++                    shiftedAnchor = Point<float>(projectedAnchor.x + shift.x, projectedAnchor.y + shift.y);
+                 }
+ 
+                 if (updateTextFitIcon && symbol.placedIconIndex) {
+@@ -1504,7 +1516,7 @@ void TilePlacement::placeSymbolBucket(const BucketPlacementData& params, std::se
+         NeighborTileData(const CollisionIndex& collisionIndex, UnwrappedTileID id_, Point<float> shift_)
+             : id(id_),
+               shift(shift_),
+-              matrix(collisionIndex.getTransformState().getProjectionData(id).mainMatrix) {
++              matrix(collisionIndex.getTransformState().getProjectionData(id).fallbackMatrix) {
+             borders = collisionIndex.projectTileBoundaries(matrix);
+         }
+ 
+diff --git a/test/map/transform.test.cpp b/test/map/transform.test.cpp
+index 3c831f4c6b5795927d5f041779a81be4ec40ad29..f1040684162a95bf48d1700bda601219b0094ed8 100644
+--- a/test/map/transform.test.cpp
++++ b/test/map/transform.test.cpp
+@@ -3,6 +3,7 @@
+ #include <gmock/gmock.h>
+ #include <cmath>
+ #include <mln/map/mercator_projection.hpp>
++#include <mln/map/tile_projector.hpp>
+ #include <mln/map/vertical_perspective_projection.hpp>
+ #include <mln/map/transform.hpp>
+ #include <mln/math/angles.hpp>
+@@ -1626,3 +1627,50 @@ TEST(GlobeTransform, ZoomAdjustment) {
+     EXPECT_NEAR(-1.0, VerticalPerspectiveProjection::zoomAdjustment(0.0, 60.0), 1e-12);
+     EXPECT_NEAR(1.0, VerticalPerspectiveProjection::zoomAdjustment(60.0, 0.0), 1e-12);
+ }
++
++TEST(TileProjector, MercatorMatchesTheTileMatrix) {
++    Transform transform;
++    transform.resize({512, 512});
++    transform.jumpTo(CameraOptions().withCenter(LatLng{0.0, 0.0}).withZoom(1.0).withBearing(30.0).withPitch(20.0));
++    const TransformState& state = transform.getState();
++    ASSERT_FALSE(state.isGlobeRendering());
++
++    // The bottom-right corner of tile 1/0/0 is lat 0, lng 0: the map center.
++    const UnwrappedTileID tileID(1, 0, 0);
++    const TileProjector projector(state, tileID);
++    const Point<double> corner{util::EXTENT, util::EXTENT};
++    vec4 pos = {{corner.x, corner.y, 0, 1}};
++    matrix::transformMat4(pos, pos, state.getProjectionData(tileID).mainMatrix);
++
++    const auto projected = projector.project(corner);
++    EXPECT_NEAR(pos[0] / pos[3], projected.point.x, 1e-9);
++    EXPECT_NEAR(pos[1] / pos[3], projected.point.y, 1e-9);
++    EXPECT_NEAR(0.0, projected.point.x, 1e-6);
++    EXPECT_NEAR(0.0, projected.point.y, 1e-6);
++    EXPECT_DOUBLE_EQ(pos[3], projected.signedDistanceFromCamera);
++    EXPECT_FALSE(projected.occluded);
++    EXPECT_FALSE(projector.project({0.0, 0.0}).occluded);
++    EXPECT_DOUBLE_EQ(1.0, projector.circleRadiusCorrection());
++    EXPECT_DOUBLE_EQ(1.0, projector.pitchedTextCorrection({100.0, 100.0}));
++}
++
++TEST(TileProjector, GlobeOccludesTheFarSideAndCorrectsForLatitude) {
++    Transform transform;
++    setUpGlobe(transform, {40.0, 0.0}, 1.0);
++    const TransformState& state = transform.getState();
++    const UnwrappedTileID tileID(1, 0, 0);
++    const TileProjector projector(state, tileID);
++
++    // The bottom-right corner (lat 0, lng 0) faces the camera; the bottom-left one (lng -180, lat 0) is behind it.
++    EXPECT_FALSE(projector.project({util::EXTENT, util::EXTENT}).occluded);
++    EXPECT_TRUE(projector.project({0.0, util::EXTENT}).occluded);
++
++    const double cos40 = std::cos(util::deg2rad(40.0));
++    EXPECT_NEAR(cos40, projector.circleRadiusCorrection(), 1e-12);
++    // Tile y of latitude 60 in tile 1/0/0.
++    const double mercatorY = 0.5 - std::log(std::tan(std::numbers::pi / 4 + util::deg2rad(60.0) / 2)) /
++                                       (2 * std::numbers::pi);
++    const double tileY = mercatorY * 2 * util::EXTENT;
++    EXPECT_NEAR(cos40 / std::cos(util::deg2rad(60.0)), projector.pitchedTextCorrection({100.0, tileY}), 1e-6);
++    EXPECT_NEAR(cos40, projector.pitchedTextCorrection({100.0, util::EXTENT}), 1e-6);
++}

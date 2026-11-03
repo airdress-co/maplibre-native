@@ -28,3 +28,106 @@ summary = "A copyright line for the fork's changes above upstream's notices"
 offer = "never"
 drop_when = "never"
 
+[[patch]]
+file = "globe/01-projection-seam.patch"
+group = "globe"
+summary = "Phase 1: the projection seam and a per-drawable projection UBO"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/02-project-tile-prelude.patch"
+group = "globe"
+summary = "Phase 2: projectTile in the shader preludes, the fill family switched to it"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/03-projection-style-property.patch"
+group = "globe"
+summary = "Phase 3: the projection root style property"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/04-fill-background-metal.patch"
+group = "globe"
+summary = "Phase 4: fill and background on the globe on Metal"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/05-subdivision-pole-caps.patch"
+group = "globe"
+summary = "Phase 5: subdivided geometry and tile meshes capped at the poles"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/06-camera.patch"
+group = "globe"
+summary = "Phase 6: unproject, gesture, ease and constrain on the globe"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/07-tile-cover.patch"
+group = "globe"
+summary = "Phase 7: the tiles the camera can see on the globe"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/08-symbols.patch"
+group = "globe"
+summary = "Phase 8: symbols placed and collided on the globe"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/09-lines-metal.patch"
+group = "globe"
+summary = "Phase 9: lines on the globe on Metal"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/10-opengl.patch"
+group = "globe"
+summary = "Phase 10: the globe on OpenGL"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/11-lines-metal-2.patch"
+group = "globe"
+summary = "Phase 9: lines on the globe on Metal (continued)"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/12-glfw-toggle.patch"
+group = "globe"
+summary = "Phase 11: the GLFW app toggles the globe"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "globe/13-fixes-and-tests.patch"
+group = "globe"
+summary = "Phase 12: fixes, the remaining layer types, platform bindings and tests"
+upstream = "maplibre/maplibre-native#4533"
+author = "johncarmack1984"
+drop_when = "a base release contains #4533's merge commit"
