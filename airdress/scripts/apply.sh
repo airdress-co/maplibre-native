@@ -43,7 +43,7 @@ done
 
 [ -n "$base" ] || base="$(series_base)"
 [ -n "$branch" ] || branch="applied/$base"
-mapfile -t names < <(series_names)
+read_lines names series_names
 
 for name in "${names[@]}"; do
     group_of "$name" >/dev/null
@@ -51,7 +51,7 @@ for name in "${names[@]}"; do
 done
 
 mkdir -p "$repo"
-repo="$(realpath "$repo")"
+repo="$(abspath "$repo")"
 # The tree must be its own repository (or worktree), never a directory inside
 # another one: the checkout below is forced.
 if [ "$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" != "$repo" ]; then
@@ -61,7 +61,7 @@ if [ "$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" != "$repo" ]; the
     git -C "$repo" init -q --template=
 fi
 [ "$repo" != "$SERIES_ROOT" ] || die "refusing to apply into the series repository itself"
-am_dir="$(cd "$repo" && realpath -m "$(git rev-parse --git-path rebase-apply)")"
+am_dir="$(git -C "$repo" rev-parse --absolute-git-dir)/rebase-apply"
 git -C "$repo" remote get-url upstream >/dev/null 2>&1 \
     || git -C "$repo" remote add upstream "$upstream"
 fetch_ref "$repo" "$base"
