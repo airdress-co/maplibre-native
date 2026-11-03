@@ -16,6 +16,10 @@ Each DIR holds the platform's one zip asset. What is compared:
 A path that differs fails the comparison unless it matches a glob in
 airdress/build-differences.txt, where every allowed difference is listed by
 name with its cause. That list only shrinks.
+
+An entry `glob#SEGMENT,SECTION` is narrower: in a Mach-O matching the glob,
+that one section is blanked before the comparison, and every other byte of
+the binary must still be the same.
 """
 
 from __future__ import annotations
@@ -36,17 +40,35 @@ FAT_MAGIC = 0xCAFEBABE
 FAT_MAGIC_64 = 0xCAFEBABF
 LC_UUID = 0x1B
 LC_CODE_SIGNATURE = 0x1D
+LC_SEGMENT_64 = 0x19
 
 
-def allowed_patterns() -> list[str]:
+def allowed_entries() -> list[str]:
     if not ALLOWED_FILE.exists():
         return []
     return [line.strip() for line in ALLOWED_FILE.read_text().splitlines()
             if line.strip() and not line.lstrip().startswith("#")]
 
 
-def normalise_macho(data: bytes) -> bytes:
-    """A Mach-O (thin or fat) with LC_UUID and the code signature zeroed."""
+def allowed_patterns() -> list[str]:
+    """Whole files allowed to differ."""
+    return [e for e in allowed_entries() if "#" not in e]
+
+
+def blanked_sections(path: str) -> set[str]:
+    """`SEGMENT,SECTION` names to blank in the Mach-O at [path]."""
+    out = set()
+    for e in allowed_entries():
+        if "#" in e:
+            glob, section = e.split("#", 1)
+            if fnmatch.fnmatchcase(path, glob):
+                out.add(section)
+    return out
+
+
+def normalise_macho(data: bytes, sections: frozenset[str] = frozenset()) -> bytes:
+    """A Mach-O (thin or fat) with LC_UUID, the code signature and the named
+    `SEGMENT,SECTION`s zeroed."""
     if len(data) < 8:
         return data
     magic_be = struct.unpack(">I", data[:4])[0]
@@ -60,7 +82,7 @@ def normalise_macho(data: bytes) -> bytes:
                 _, _, offset, size, _ = struct.unpack(">iiIII", data[off:off + 20])
             else:
                 _, _, offset, size, _, _ = struct.unpack(">iiQQII", data[off:off + 32])
-            out[offset:offset + size] = normalise_macho(bytes(data[offset:offset + size]))
+            out[offset:offset + size] = normalise_macho(bytes(data[offset:offset + size]), sections)
         return bytes(out)
     if struct.unpack("<I", data[:4])[0] != MH_MAGIC_64:
         return data
@@ -74,6 +96,16 @@ def normalise_macho(data: bytes) -> bytes:
         elif cmd == LC_CODE_SIGNATURE:
             dataoff, datasize = struct.unpack("<II", data[off + 8:off + 16])
             out[dataoff:dataoff + datasize] = b"\0" * datasize
+        elif cmd == LC_SEGMENT_64 and sections:
+            segname = data[off + 8:off + 24].rstrip(b"\0").decode()
+            nsects = struct.unpack("<I", data[off + 64:off + 68])[0]
+            so = off + 72
+            for _ in range(nsects):
+                sectname = data[so:so + 16].rstrip(b"\0").decode()
+                size_, fileoff = struct.unpack("<QI", data[so + 40:so + 52])
+                if f"{segname},{sectname}" in sections and fileoff:
+                    out[fileoff:fileoff + size_] = b"\0" * size_
+                so += 80
         off += size
     return bytes(out)
 
@@ -101,7 +133,7 @@ def digests(platform: str, zip_bytes: bytes, prefix: str = "") -> dict[str, str]
                 except zipfile.BadZipFile:
                     pass
             if platform == "ios" and is_macho(data):
-                data = normalise_macho(data)
+                data = normalise_macho(data, frozenset(blanked_sections(path)))
             result[path] = hashlib.sha256(data).hexdigest()
     return result
 
