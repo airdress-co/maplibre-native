@@ -131,3 +131,21 @@ summary = "Phase 12: fixes, the remaining layer types, platform bindings and tes
 upstream = "maplibre/maplibre-native#4533"
 author = "johncarmack1984"
 drop_when = "a base release contains #4533's merge commit"
+
+[[patch]]
+file = "ours/0001-metal-async-shader-libraries.patch"
+group = "ours"
+summary = "Metal shader libraries compile off the render thread; drawables wait instead of blocking (upstream's open #4563, its author's commit, carried until merged; no offer or comment from us)"
+offer = "offered-upstream"
+route = "upstream-pr"
+link = "https://github.com/maplibre/maplibre-native/pull/4563"
+drop_when = "a base release contains #4563's merge commit"
+tests = ["//platform/ios/test:ios_test MLNAsyncShaderCompilationTests"]
+
+[[patch]]
+file = "ours/0002-metal-async-pipeline-states.patch"
+group = "ours"
+summary = "Metal render pipeline states build off the render thread for async-compiled programs, the hang #4563 leaves on a cold shader cache"
+offer = "owner-declined"
+drop_when = "a base release builds pipeline states asynchronously (with #4563 or a successor)"
+tests = ["//platform/ios/test:ios_test MLNAsyncShaderCompilationTests"]

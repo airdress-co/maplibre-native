@@ -19,3 +19,5 @@ globe/10-opengl.patch
 globe/11-lines-metal-2.patch
 globe/12-glfw-toggle.patch
 globe/13-fixes-and-tests.patch
+ours/0001-metal-async-shader-libraries.patch
+ours/0002-metal-async-pipeline-states.patch

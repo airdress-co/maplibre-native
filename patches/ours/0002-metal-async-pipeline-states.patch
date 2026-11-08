@@ -1,0 +1,389 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Robert Jefe Lindstaedt <robert.lindstaedt@gmail.com>
+Date: Mon, 9 Nov 2026 00:13:24 +0100
+Subject: [PATCH] metal: build render pipeline states off the render thread for
+ async-compiled programs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+With asynchronous shader compilation on, the library compile leaves the
+render thread, but the first draw of each program still builds its render
+pipeline state synchronously with newRenderPipelineState. That is where
+Metal compiles the program for the GPU, and on a cold shader cache it
+blocks the render thread (the main thread on iOS) for longer than the
+library compile did: an iOS app reported "App hanging for at least
+2000 ms" inside ShaderProgram::getRenderPipelineState →
+AGX::Compiler::compileProgram on the first launch of a fresh install,
+with the library compile already taken off the main thread.
+
+A program compiled asynchronously now builds its pipeline states
+asynchronously too, with the completion-handler form of
+newRenderPipelineState, keyed by the same reuse hash as the pipeline
+state cache. getRenderPipelineState returns null while the state is
+building; the drawable skips its draw for that frame
+(ShaderProgram::isPipelineStatePending) instead of asserting; the build
+is counted with the pending library compiles, so the renderer keeps
+requesting frames until it lands, and the state then enters the cache as
+before. A failed asynchronous build falls back to one synchronous attempt,
+which logs and asserts as before. Synchronously compiled programs (the
+clipping mask, and every program while the option is off) are unchanged.
+---
+ include/mln/mtl/mtl_fwd.hpp                   |   2 +
+ include/mln/shaders/mtl/shader_program.hpp    |  25 +++++
+ .../test/MLNAsyncShaderCompilationTests.swift | 100 +++++++++++++++++
+ src/mln/mtl/context.cpp                       |   1 +
+ src/mln/mtl/drawable.cpp                      |   8 +-
+ src/mln/shaders/mtl/shader_program.cpp        | 104 +++++++++++++++---
+ 6 files changed, 223 insertions(+), 17 deletions(-)
+ create mode 100644 platform/ios/test/MLNAsyncShaderCompilationTests.swift
+
+diff --git a/include/mln/mtl/mtl_fwd.hpp b/include/mln/mtl/mtl_fwd.hpp
+index c28ec9b4172f6cd9f5333e6068bd4b4bd806b9c3..a2873b03062ca6ce605b97cadf24cda4c4ceb24c 100644
+--- a/include/mln/mtl/mtl_fwd.hpp
++++ b/include/mln/mtl/mtl_fwd.hpp
+@@ -27,6 +27,7 @@ class Device;
+ class DepthStencilState;
+ class Function;
+ class RenderCommandEncoder;
++class RenderPipelineDescriptor;
+ class RenderPipelineState;
+ class RenderPassDescriptor;
+ class Texture;
+@@ -55,6 +56,7 @@ using MTLDepthStencilStatePtr = NS::SharedPtr<MTL::DepthStencilState>;
+ using MTLFunctionPtr = NS::SharedPtr<MTL::Function>;
+ using MTLRenderCommandEncoderPtr = NS::SharedPtr<MTL::RenderCommandEncoder>;
+ using MTLRenderPassDescriptorPtr = NS::SharedPtr<MTL::RenderPassDescriptor>;
++using MTLRenderPipelineDescriptorPtr = NS::SharedPtr<MTL::RenderPipelineDescriptor>;
+ using MTLRenderPipelineStatePtr = NS::SharedPtr<MTL::RenderPipelineState>;
+ using MTLTexturePtr = NS::SharedPtr<MTL::Texture>;
+ using MTLTextureDescriptorPtr = NS::SharedPtr<MTL::TextureDescriptor>;
+diff --git a/include/mln/shaders/mtl/shader_program.hpp b/include/mln/shaders/mtl/shader_program.hpp
+index afb8c2889f71e3d83ec99367f25e899ccbd3ec2f..15efa68604b2e146aa0bb8b2a15d928904f9497d 100644
+--- a/include/mln/shaders/mtl/shader_program.hpp
++++ b/include/mln/shaders/mtl/shader_program.hpp
+@@ -57,6 +57,17 @@ public:
+         MTLFunctionPtr fragment;
+         std::atomic<bool> ready{false};
+         std::atomic<bool> failed{false};
++        /// The context's count of work in flight off the render thread; the program's pipeline
++        /// states are counted in it too, so the renderer keeps requesting frames until they land.
++        std::shared_ptr<std::atomic<int>> counter;
++    };
++
++    /// A render pipeline state Metal is building off the render thread, filled in by the
++    /// completion handler and adopted on the render thread once `done` is set.
++    struct PendingPipeline {
++        std::mutex mutex;
++        MTLRenderPipelineStatePtr state;
++        std::atomic<bool> done{false};
+     };
+ 
+     ShaderProgram(std::string name,
+@@ -75,6 +86,10 @@ public:
+     /// frames until it turns true.
+     bool isReady() const;
+ 
++    /// Whether the pipeline state for `reuseHash` is being built off the render thread
++    /// (`getRenderPipelineState` returned null for it). A drawable skips its draw meanwhile.
++    bool isPipelineStatePending(std::size_t reuseHash) const;
++
+     MTLRenderPipelineStatePtr getRenderPipelineState(const gfx::Renderable&,
+                                                      const MTLVertexDescriptorPtr&,
+                                                      const gfx::ColorMode& colorMode,
+@@ -91,11 +106,21 @@ public:
+     void initTexture(const shaders::TextureInfo&);
+ 
+ protected:
++    MTLRenderPipelineDescriptorPtr makePipelineDescriptor(const gfx::Renderable&,
++                                                          const MTLVertexDescriptorPtr&,
++                                                          const gfx::ColorMode&) const;
++
+     std::string shaderName;
+     RendererBackend& backend;
+     mutable MTLFunctionPtr vertexFunction;
+     mutable MTLFunctionPtr fragmentFunction;
+     mutable std::shared_ptr<PendingFunctions> pending;
++    /// Set for a program compiled asynchronously: its pipeline states are built asynchronously
++    /// too, because building one is where Metal compiles the program for the GPU, which on a
++    /// cold shader cache blocks for longer than compiling the library did.
++    bool asyncPipelineStates = false;
++    std::shared_ptr<std::atomic<int>> pendingCounter;
++    mutable mln::unordered_map<std::size_t, std::shared_ptr<PendingPipeline>> pendingPipelineStates;
+     VertexAttributeArray vertexAttributes;
+     VertexAttributeArray instanceAttributes;
+     std::array<std::optional<size_t>, shaders::maxTextureCountPerShader> textureBindings;
+diff --git a/platform/ios/test/MLNAsyncShaderCompilationTests.swift b/platform/ios/test/MLNAsyncShaderCompilationTests.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..df59f0606c7a3d26b97c522fb187f431017539a1
+--- /dev/null
++++ b/platform/ios/test/MLNAsyncShaderCompilationTests.swift
+@@ -0,0 +1,100 @@
++import MapLibre
++import XCTest
++
++/// MLNMapView compiles shader libraries and builds render pipeline states off the
++/// render thread: a drawable whose program or pipeline state is not ready skips its draw,
++/// and the renderer keeps requesting frames until the work lands. These tests check the
++/// second half of that contract: a style that needs several new programs and pipeline
++/// states still reaches a fully rendered frame, rather than stalling with drawables that
++/// never draw.
++class MLNAsyncShaderCompilationTests: XCTestCase, MLNMapViewDelegate {
++    var mapView: MLNMapView!
++    var window: UIWindow!
++    var styleURL: URL!
++    var styleLoaded: XCTestExpectation?
++    var fullyRendered: XCTestExpectation?
++    var framesRendered = 0
++
++    // Background, a fill with an outline and a line: several programs, each with its own
++    // pipeline states, all new on the first frame.
++    static let style = """
++    {
++      "version": 8,
++      "sources": {
++        "shapes": {
++          "type": "geojson",
++          "data": {
++            "type": "FeatureCollection",
++            "features": [
++              {"type": "Feature", "properties": {},
++               "geometry": {"type": "Polygon",
++                            "coordinates": [[[-10, -10], [10, -10], [10, 10], [-10, 10], [-10, -10]]]}},
++              {"type": "Feature", "properties": {},
++               "geometry": {"type": "LineString", "coordinates": [[-20, -20], [20, 20]]}}
++            ]
++          }
++        }
++      },
++      "layers": [
++        {"id": "background", "type": "background", "paint": {"background-color": "#ffffff"}},
++        {"id": "fill", "type": "fill", "source": "shapes",
++         "paint": {"fill-color": "#0f8a72", "fill-outline-color": "#000000"}},
++        {"id": "line", "type": "line", "source": "shapes",
++         "paint": {"line-color": "#ff0000", "line-width": 3}}
++      ]
++    }
++    """
++
++    override func setUp() {
++        super.setUp()
++        styleURL = FileManager.default.temporaryDirectory
++            .appendingPathComponent("async-shader-compilation-\(UUID().uuidString).json")
++        XCTAssertNoThrow(try Self.style.write(to: styleURL, atomically: true, encoding: .utf8))
++
++        mapView = MLNMapView(frame: CGRect(x: 0, y: 0, width: 256, height: 256), styleURL: styleURL)
++        mapView.delegate = self
++        mapView.setCenter(CLLocationCoordinate2D(latitude: 0, longitude: 0), zoomLevel: 2, animated: false)
++
++        window = UIWindow(frame: mapView.bounds)
++        window.addSubview(mapView)
++        window.makeKeyAndVisible()
++    }
++
++    override func tearDown() {
++        mapView = nil
++        window = nil
++        try? FileManager.default.removeItem(at: styleURL)
++        super.tearDown()
++    }
++
++    func mapView(_: MLNMapView, didFinishLoading _: MLNStyle) {
++        styleLoaded?.fulfill()
++        styleLoaded = nil
++    }
++
++    func mapViewDidFinishRenderingFrame(_: MLNMapView, fullyRendered _: Bool) {
++        framesRendered += 1
++    }
++
++    func mapViewDidFinishRenderingMap(_: MLNMapView, fullyRendered: Bool) {
++        if fullyRendered {
++            self.fullyRendered?.fulfill()
++            self.fullyRendered = nil
++        }
++    }
++
++    func testAStyleWithNewProgramsReachesAFullyRenderedFrame() {
++        if mapView.style == nil {
++            styleLoaded = expectation(description: "the style loads")
++            wait(for: [styleLoaded!], timeout: 10)
++        }
++        fullyRendered = expectation(description: "the map finishes rendering, fully")
++        mapView.setNeedsDisplay()
++        // Generous: a cold shader cache on a simulator compiles each program in ~0.5 s,
++        // concurrently. A renderer that stopped requesting frames while pipeline states were
++        // pending would never get here.
++        wait(for: [fullyRendered!], timeout: 30)
++        XCTAssertGreaterThan(framesRendered, 0)
++        XCTAssertEqual(mapView.style?.layer(withIdentifier: "fill")?.isVisible, true)
++    }
++}
+diff --git a/src/mln/mtl/context.cpp b/src/mln/mtl/context.cpp
+index db18e6e08e98f4381ed5f8d8204c00dbd9f9b193..c10c36e894c46765b18cbc505b0a393bfd9101f0 100644
+--- a/src/mln/mtl/context.cpp
++++ b/src/mln/mtl/context.cpp
+@@ -161,6 +161,7 @@ UniqueShaderProgram Context::createProgram(shaders::BuiltIn shaderID,
+     // not raised from the completion handler.
+     if (asyncShaderCompilation && shaderID != shaders::BuiltIn::ClippingMaskProgram) {
+         auto pending = std::make_shared<ShaderProgram::PendingFunctions>();
++        pending->counter = pendingShaderCompiles;
+         auto shader = std::make_unique<ShaderProgram>(name, backend, pending);
+         pendingShaderCompiles->fetch_add(1);
+         device->newLibrary(
+diff --git a/src/mln/mtl/drawable.cpp b/src/mln/mtl/drawable.cpp
+index 7b111018afb6a81a8701a1e652ac5ad6c0f11b9c..aad2e33529ccb46ba7937ff90f75b580c0ba0021 100644
+--- a/src/mln/mtl/drawable.cpp
++++ b/src/mln/mtl/drawable.cpp
+@@ -233,8 +233,14 @@ void Drawable::draw(PaintParameters& parameters) const {
+             // renderer keeps requesting frames while any compile is pending.
+             return;
+         }
++        const auto pipelineHash = mln::util::hash(getColorMode().hash(), impl->vertexDescHash);
+         impl->pipelineState = shaderMTL.getRenderPipelineState(
+-            renderable, impl->vertexDesc, getColorMode(), mln::util::hash(getColorMode().hash(), impl->vertexDescHash));
++            renderable, impl->vertexDesc, getColorMode(), pipelineHash);
++        if (!impl->pipelineState && shaderMTL.isPipelineStatePending(pipelineHash)) {
++            // Metal is building the pipeline state off the render thread; skip this drawable for
++            // the frame, as for a program still compiling.
++            return;
++        }
+     }
+     if (impl->pipelineState) {
+         renderPass.setRenderPipelineState(impl->pipelineState);
+diff --git a/src/mln/shaders/mtl/shader_program.cpp b/src/mln/shaders/mtl/shader_program.cpp
+index 10ee0fa9ae450a66594b5d34d8b9d3d54418e8e0..9cc76156aafa8700957d47e9ab779af26f506394 100644
+--- a/src/mln/shaders/mtl/shader_program.cpp
++++ b/src/mln/shaders/mtl/shader_program.cpp
+@@ -14,6 +14,7 @@
+ #include <Metal/MTLRenderPass.hpp>
+ #include <Metal/MTLRenderPipeline.hpp>
+ 
++#include <chrono>
+ #include <cstring>
+ #include <utility>
+ #include <algorithm>
+@@ -82,7 +83,9 @@ ShaderProgram::ShaderProgram(std::string name, RendererBackend& backend_, std::s
+     : ShaderProgramBase(),
+       shaderName(std::move(name)),
+       backend(backend_),
+-      pending(std::move(pending_)) {}
++      pending(std::move(pending_)),
++      asyncPipelineStates(true),
++      pendingCounter(pending ? pending->counter : nullptr) {}
+ 
+ ShaderProgram::~ShaderProgram() noexcept = default;
+ 
+@@ -107,21 +110,9 @@ bool ShaderProgram::isReady() const {
+     return true;
+ }
+ 
+-MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Renderable& renderable,
+-                                                                const MTLVertexDescriptorPtr& vertexDescriptor,
+-                                                                const gfx::ColorMode& colorMode,
+-                                                                const std::optional<std::size_t> reuseHash) const {
+-    if (!isReady()) {
+-        return nullptr; // still compiling asynchronously
+-    }
+-    if (reuseHash.has_value()) {
+-        // we'd like to reuse a previous value
+-        if (auto it = renderPipelineStateCache.find(reuseHash.value()); it != renderPipelineStateCache.end())
+-            return it->second;
+-    }
+-
+-    auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+-
++MTLRenderPipelineDescriptorPtr ShaderProgram::makePipelineDescriptor(const gfx::Renderable& renderable,
++                                                                     const MTLVertexDescriptorPtr& vertexDescriptor,
++                                                                     const gfx::ColorMode& colorMode) const {
+     const auto& renderableResource = renderable.getResource<RenderableResource>();
+ 
+     auto colorFormat = MTL::PixelFormat::PixelFormatBGRA8Unorm;
+@@ -190,6 +181,87 @@ MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Rende
+         desc->setStencilAttachmentPixelFormat(*stencilFormat);
+     }
+ 
++    return desc;
++}
++
++bool ShaderProgram::isPipelineStatePending(std::size_t reuseHash) const {
++    return pendingPipelineStates.find(reuseHash) != pendingPipelineStates.end();
++}
++
++MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Renderable& renderable,
++                                                                const MTLVertexDescriptorPtr& vertexDescriptor,
++                                                                const gfx::ColorMode& colorMode,
++                                                                const std::optional<std::size_t> reuseHash) const {
++    if (!isReady()) {
++        return nullptr; // still compiling asynchronously
++    }
++    if (reuseHash.has_value()) {
++        // we'd like to reuse a previous value
++        if (auto it = renderPipelineStateCache.find(reuseHash.value()); it != renderPipelineStateCache.end())
++            return it->second;
++    }
++
++    auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
++
++    // Asynchronous path, for programs compiled asynchronously: building a pipeline state is where
++    // Metal compiles the program for this GPU, and on a cold shader cache that blocks the render
++    // thread (the main thread on iOS) for longer than compiling the library did. Build it on
++    // Metal's queue and return null until it lands; the drawable skips its draw meanwhile
++    // (isPipelineStatePending) and the renderer keeps requesting frames while it is counted.
++    if (asyncPipelineStates && reuseHash.has_value()) {
++        if (auto it = pendingPipelineStates.find(*reuseHash); it != pendingPipelineStates.end()) {
++            const auto slot = it->second;
++            if (!slot->done.load(std::memory_order_acquire)) {
++                return nullptr;
++            }
++            pendingPipelineStates.erase(it);
++            MTLRenderPipelineStatePtr built;
++            {
++                std::scoped_lock lock(slot->mutex);
++                built = slot->state;
++            }
++            if (built) {
++                renderPipelineStateCache[*reuseHash] = built;
++                return built;
++            }
++            // The asynchronous build failed (logged by its handler): try once synchronously below,
++            // which logs and asserts as before.
++        } else {
++            auto slot = std::make_shared<PendingPipeline>();
++            pendingPipelineStates.emplace(*reuseHash, slot);
++            const auto desc = makePipelineDescriptor(renderable, vertexDescriptor, colorMode);
++            if (pendingCounter) {
++                pendingCounter->fetch_add(1);
++            }
++            const auto buildStart = std::chrono::steady_clock::now();
++            backend.getDevice()->newRenderPipelineState(
++                desc.get(),
++                [slot, counter = pendingCounter, name = shaderName, buildStart](MTL::RenderPipelineState* state,
++                                                                                NS::Error* buildError) {
++                    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++                                        std::chrono::steady_clock::now() - buildStart)
++                                        .count();
++                    if (state && !buildError) {
++                        std::scoped_lock lock(slot->mutex);
++                        slot->state = NS::RetainPtr(state);
++                        Log::Info(Event::Shader,
++                                  name + " pipeline state built asynchronously in " + std::to_string(ms) + " ms");
++                    } else {
++                        const auto errPtr = buildError ? buildError->localizedDescription()->utf8String() : nullptr;
++                        const auto errStr = (errPtr && errPtr[0]) ? ": "s + errPtr : std::string();
++                        Log::Error(Event::Shader, name + " async newRenderPipelineState failed" + errStr);
++                    }
++                    slot->done.store(true, std::memory_order_release);
++                    if (counter) {
++                        counter->fetch_sub(1);
++                    }
++                });
++            return nullptr;
++        }
++    }
++
++    const auto desc = makePipelineDescriptor(renderable, vertexDescriptor, colorMode);
++
+     NS::Error* error = nullptr;
+     const auto& device = backend.getDevice();
+     auto rps = NS::TransferPtr(device->newRenderPipelineState(desc.get(), &error));
