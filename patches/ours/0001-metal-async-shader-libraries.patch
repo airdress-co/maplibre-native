@@ -1,0 +1,374 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: AndrewsN81 <nathan.andrews81@gmail.com>
+Date: Sat, 5 Sep 2026 21:08:17 +1000
+Subject: [PATCH] metal: compile shader libraries off the render thread
+ (opt-in); drawables wait instead of blocking
+
+Every Metal program is compiled from source on first use with a synchronous
+newLibrary, on the render thread - which on iOS is the main thread. With a
+cold shader cache that is ~0.4-0.6 s per program, sequentially: a first
+launch stalled the UI for seconds, and a 3D-terrain style's first draped
+frame (terrain + depth pass + new symbol permutations) for over a second.
+
+gfx::Context::setAsyncShaderCompilation(bool) (Metal implements it) hands
+back a ShaderProgram whose functions arrive from Metal's asynchronous
+newLibrary completion handler (ShaderProgram::PendingFunctions, adopted on
+the render thread). Drawables whose program is not ready skip the frame,
+and Renderer keeps requesting frames while Context::hasPendingShaderCompiles.
+The clipping mask program stays synchronous (drawn outside the drawable
+path). Off by default so single-frame renders (render tests, snapshots)
+are unchanged; MLNMapView turns it on via Renderer::setAsyncShaderCompilation.
+Compile durations are logged at Info.
+
+Measured on the iOS simulator with the shader cache cleared: 13 programs
+compiled concurrently off-thread at 400-560 ms each, map identical.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ include/mln/gfx/context.hpp                | 10 ++++
+ include/mln/mtl/context.hpp                |  9 ++++
+ include/mln/renderer/renderer.hpp          |  3 ++
+ include/mln/shaders/mtl/shader_program.hpp | 26 +++++++++-
+ platform/ios/src/MLNMapView.mm             |  4 ++
+ src/mln/mtl/context.cpp                    | 59 ++++++++++++++++++++++
+ src/mln/mtl/drawable.cpp                   |  6 +++
+ src/mln/renderer/renderer.cpp              |  4 ++
+ src/mln/renderer/renderer_impl.cpp         |  5 +-
+ src/mln/renderer/renderer_impl.hpp         |  2 +
+ src/mln/shaders/mtl/shader_program.cpp     | 30 +++++++++++
+ 11 files changed, 155 insertions(+), 3 deletions(-)
+
+diff --git a/include/mln/gfx/context.hpp b/include/mln/gfx/context.hpp
+index cb287cc22d67d297ec53fe6a07e9964d8f7f6645..a3be0b0f738cda43cc69191d9dbb77b05db75bd6 100644
+--- a/include/mln/gfx/context.hpp
++++ b/include/mln/gfx/context.hpp
+@@ -139,6 +139,16 @@ public:
+                                                        const std::string& name,
+                                                        ProjectionVariant) = 0;
+ 
++    /// Compile shader programs off the render thread where the backend supports it (Metal).
++    /// A program's drawables are skipped for the frames its library is still compiling and the
++    /// renderer keeps requesting frames until every pending compile has landed, so first use of
++    /// a shader (a new symbol permutation, the terrain pass) no longer stalls the render thread
++    /// - on iOS that thread is the main thread, and a terrain style's first draped frame stalled
++    /// it for over a second. Off by default so single-frame renders (render tests, snapshots)
++    /// stay deterministic.
++    virtual void setAsyncShaderCompilation(bool) {}
++    virtual bool hasPendingShaderCompiles() const { return false; }
++
+     /// Create a tile layer group implementation
+     virtual TileLayerGroupPtr createTileLayerGroup(int32_t layerIndex,
+                                                    std::size_t initialCapacity,
+diff --git a/include/mln/mtl/context.hpp b/include/mln/mtl/context.hpp
+index edcbcb272f198aee38ce88f2979ee3926db3fddb..7403efd511cd60a6de88e78ed3d299a23ce9216d 100644
+--- a/include/mln/mtl/context.hpp
++++ b/include/mln/mtl/context.hpp
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <atomic>
++#include <memory>
+ #include <mln/gfx/draw_mode.hpp>
+ #include <mln/gfx/depth_mode.hpp>
+ #include <mln/gfx/stencil_mode.hpp>
+@@ -97,6 +99,9 @@ public:
+                                                const std::string& name,
+                                                gfx::ProjectionVariant) override;
+ 
++    void setAsyncShaderCompilation(bool enabled) override { asyncShaderCompilation = enabled; }
++    bool hasPendingShaderCompiles() const override { return pendingShaderCompiles->load() > 0; }
++
+     TileLayerGroupPtr createTileLayerGroup(int32_t layerIndex, std::size_t initialCapacity, std::string name) override;
+ 
+     LayerGroupPtr createLayerGroup(int32_t layerIndex, std::size_t initialCapacity, std::string name) override;
+@@ -206,6 +211,10 @@ private:
+     std::optional<BufferResource> globeClipMaskUniformsBuffer;
+     bool globeClipMaskUniformsBufferUsed = false;
+     std::map<std::tuple<uint8_t, bool, bool, bool>, GlobeClipMesh> globeClipMeshes;
++    bool asyncShaderCompilation = false;
++    // Shared with the compile completion handlers so a handler landing after the context is
++    // gone has nothing dangling to decrement.
++    std::shared_ptr<std::atomic<int>> pendingShaderCompiles = std::make_shared<std::atomic<int>>(0);
+     const gfx::Renderable* stencilStateRenderable = nullptr;
+ 
+     UniformBufferArray globalUniformBuffers;
+diff --git a/include/mln/renderer/renderer.hpp b/include/mln/renderer/renderer.hpp
+index 765af27742adfcb4327be172d149d6e62ab1ef9f..007b360d17d1cfd1f0018fd9d770416aabfb9e3c 100644
+--- a/include/mln/renderer/renderer.hpp
++++ b/include/mln/renderer/renderer.hpp
+@@ -111,6 +111,9 @@ public:
+     const std::vector<PlacedSymbolData>& getPlacedSymbolsData() const;
+ 
+     // Memory
++    /// Compile shaders off the render thread (Metal); see gfx::Context::setAsyncShaderCompilation.
++    /// Platforms whose render thread is the UI thread (iOS) turn this on.
++    void setAsyncShaderCompilation(bool);
+     void setTileCacheEnabled(bool);
+     bool getTileCacheEnabled() const;
+     void reduceMemoryUse();
+diff --git a/include/mln/shaders/mtl/shader_program.hpp b/include/mln/shaders/mtl/shader_program.hpp
+index 960b48a669cca758244979d1f70c5f20e05dd34c..afb8c2889f71e3d83ec99367f25e899ccbd3ec2f 100644
+--- a/include/mln/shaders/mtl/shader_program.hpp
++++ b/include/mln/shaders/mtl/shader_program.hpp
+@@ -1,5 +1,8 @@
+ #pragma once
+ 
++#include <atomic>
++#include <memory>
++#include <mutex>
+ #include <mln/shaders/shader_program_base.hpp>
+ #include <mln/mtl/mtl_fwd.hpp>
+ #include <mln/mtl/vertex_attribute.hpp>
+@@ -45,15 +48,33 @@ using UniqueShaderProgram = std::unique_ptr<ShaderProgram>;
+ 
+ class ShaderProgram final : public gfx::ShaderProgramBase {
+ public:
++    /// Functions of a program whose Metal library is compiling off the render thread
++    /// (gfx::Context::setAsyncShaderCompilation). Filled in by the compile completion handler;
++    /// the program adopts them on the render thread once `ready` is set.
++    struct PendingFunctions {
++        std::mutex mutex;
++        MTLFunctionPtr vertex;
++        MTLFunctionPtr fragment;
++        std::atomic<bool> ready{false};
++        std::atomic<bool> failed{false};
++    };
++
+     ShaderProgram(std::string name,
+                   RendererBackend& backend,
+                   MTLFunctionPtr vertexFunction,
+                   MTLFunctionPtr fragmentFunction);
++    /// A program still compiling: `getRenderPipelineState` returns null until the functions land.
++    ShaderProgram(std::string name, RendererBackend& backend, std::shared_ptr<PendingFunctions> pending);
+     ~ShaderProgram() noexcept override;
+ 
+     static constexpr std::string_view Name{"GenericMTLShader"};
+     const std::string_view typeName() const noexcept override { return Name; }
+ 
++    /// Whether the compiled functions are available (always true for synchronously compiled
++    /// programs). Drawables skip their draw while this is false; the renderer keeps requesting
++    /// frames until it turns true.
++    bool isReady() const;
++
+     MTLRenderPipelineStatePtr getRenderPipelineState(const gfx::Renderable&,
+                                                      const MTLVertexDescriptorPtr&,
+                                                      const gfx::ColorMode& colorMode,
+@@ -72,8 +93,9 @@ public:
+ protected:
+     std::string shaderName;
+     RendererBackend& backend;
+-    MTLFunctionPtr vertexFunction;
+-    MTLFunctionPtr fragmentFunction;
++    mutable MTLFunctionPtr vertexFunction;
++    mutable MTLFunctionPtr fragmentFunction;
++    mutable std::shared_ptr<PendingFunctions> pending;
+     VertexAttributeArray vertexAttributes;
+     VertexAttributeArray instanceAttributes;
+     std::array<std::optional<size_t>, shaders::maxTextureCountPerShader> textureBindings;
+diff --git a/platform/ios/src/MLNMapView.mm b/platform/ios/src/MLNMapView.mm
+index 5425983e05b946d279b25f3d2f91928098c4c269..4cfa1cdafb1742e01f89deac2d0df3b975cfb7b7 100644
+--- a/platform/ios/src/MLNMapView.mm
++++ b/platform/ios/src/MLNMapView.mm
+@@ -737,6 +737,10 @@ public:
+           : std::nullopt;
+   auto renderer = std::make_unique<mln::Renderer>(_mbglView->getRendererBackend(),
+                                                   config.scaleFactor, localFontFamilyName);
++  // MapLibre renders on the main thread here, and compiling a Metal shader from source on first
++  // use took the main thread for up to ~1.2 s per program (3D terrain's first draped frame, new
++  // symbol permutations). Compile off-thread; drawables wait a frame or two instead.
++  renderer->setAsyncShaderCompilation(true);
+   BOOL enableCrossSourceCollisions = !config.perSourceCollisions;
+   _rendererFrontend = std::make_unique<MLNRenderFrontend>(std::move(renderer), self,
+                                                           _mbglView->getRendererBackend());
+diff --git a/src/mln/mtl/context.cpp b/src/mln/mtl/context.cpp
+index a627b087bddea760960b8ffcabe1e7d64ac75ee4..db18e6e08e98f4381ed5f8d8204c00dbd9f9b193 100644
+--- a/src/mln/mtl/context.cpp
++++ b/src/mln/mtl/context.cpp
+@@ -1,5 +1,7 @@
+ #include <mln/mtl/context.hpp>
+ 
++#include <chrono>
++
+ #include <mln/gfx/shader_registry.hpp>
+ #include <mln/mtl/command_encoder.hpp>
+ #include <mln/mtl/drawable_builder.hpp>
+@@ -150,7 +152,64 @@ UniqueShaderProgram Context::createProgram(shaders::BuiltIn shaderID,
+         source.data(), NS::UTF8StringEncoding); // NOLINT(bugprone-suspicious-stringview-data-usage)
+ 
+     const auto& device = backend.getDevice();
++    const auto compileStart = std::chrono::steady_clock::now();
++
++    // Asynchronous path: hand back a program whose functions arrive later, and let Metal compile
++    // the library on its own queue. The clipping mask program stays synchronous - it is drawn
++    // through Context::renderTileClippingMasks rather than a drawable, so it has no "skip this
++    // frame" path. Observer post-compile / failure callbacks belong to the render thread and are
++    // not raised from the completion handler.
++    if (asyncShaderCompilation && shaderID != shaders::BuiltIn::ClippingMaskProgram) {
++        auto pending = std::make_shared<ShaderProgram::PendingFunctions>();
++        auto shader = std::make_unique<ShaderProgram>(name, backend, pending);
++        pendingShaderCompiles->fetch_add(1);
++        device->newLibrary(
++            nsSource,
++            options.get(),
++            [pending,
++             counter = pendingShaderCompiles,
++             shaderName = name,
++             vertName = std::string(vertexName),
++             fragName = std::string(fragmentName),
++             compileStart](MTL::Library* library, NS::Error* compileError) {
++                auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
++                MTLFunctionPtr vert;
++                MTLFunctionPtr frag;
++                if (library && !compileError) {
++                    vert = NS::TransferPtr(
++                        library->newFunction(NS::String::string(vertName.c_str(), NS::UTF8StringEncoding)));
++                    if (!fragName.empty()) {
++                        frag = NS::TransferPtr(
++                            library->newFunction(NS::String::string(fragName.c_str(), NS::UTF8StringEncoding)));
++                    }
++                }
++                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
++                                                                                      compileStart)
++                                    .count();
++                if (!vert || (!fragName.empty() && !frag)) {
++                    const auto errPtr = compileError ? compileError->localizedDescription()->utf8String() : nullptr;
++                    const auto errStr = (errPtr && errPtr[0]) ? ": " + std::string(errPtr) : std::string();
++                    Log::Error(Event::Shader, shaderName + " async compile failed" + errStr);
++                    pending->failed.store(true);
++                } else {
++                    std::scoped_lock lock(pending->mutex);
++                    pending->vertex = std::move(vert);
++                    pending->fragment = std::move(frag);
++                    Log::Info(Event::Shader, shaderName + " compiled asynchronously in " + std::to_string(ms) + " ms");
++                }
++                pending->ready.store(true, std::memory_order_release);
++                counter->fetch_sub(1);
++            });
++        return shader;
++    }
++
+     auto library = NS::TransferPtr(device->newLibrary(nsSource, options.get(), &error));
++    Log::Info(Event::Shader,
++              name + " compiled in " +
++                  std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                     std::chrono::steady_clock::now() - compileStart)
++                                     .count()) +
++                  " ms");
+     if (!library || error) {
+         const auto errPtr = error ? error->localizedDescription()->utf8String() : nullptr;
+         const auto errStr = (errPtr && errPtr[0]) ? ": " + std::string(errPtr) : std::string();
+diff --git a/src/mln/mtl/drawable.cpp b/src/mln/mtl/drawable.cpp
+index a3aee9a2ede22331f8f7228c5aef495c29da35c2..7b111018afb6a81a8701a1e652ac5ad6c0f11b9c 100644
+--- a/src/mln/mtl/drawable.cpp
++++ b/src/mln/mtl/drawable.cpp
+@@ -227,6 +227,12 @@ void Drawable::draw(PaintParameters& parameters) const {
+     renderPass.setScissorRect(getMetalScissorRect(parameters.scissorRect));
+ 
+     if (!impl->pipelineState) {
++        if (!shaderMTL.isReady()) {
++            // The program's library is still compiling off the render thread
++            // (gfx::Context::setAsyncShaderCompilation); skip this drawable for the frame. The
++            // renderer keeps requesting frames while any compile is pending.
++            return;
++        }
+         impl->pipelineState = shaderMTL.getRenderPipelineState(
+             renderable, impl->vertexDesc, getColorMode(), mln::util::hash(getColorMode().hash(), impl->vertexDescHash));
+     }
+diff --git a/src/mln/renderer/renderer.cpp b/src/mln/renderer/renderer.cpp
+index c1cfa1100272d6122a3b1634e97ea20ead8c28ea..d672fa21195455ced60a0d164359a919f2c1954e 100644
+--- a/src/mln/renderer/renderer.cpp
++++ b/src/mln/renderer/renderer.cpp
+@@ -157,6 +157,10 @@ const std::vector<PlacedSymbolData>& Renderer::getPlacedSymbolsData() const {
+     return impl->orchestrator.getPlacedSymbolsData();
+ }
+ 
++void Renderer::setAsyncShaderCompilation(bool enable) {
++    impl->asyncShaderCompilation = enable;
++}
++
+ void Renderer::setTileCacheEnabled(bool enable) {
+     impl->orchestrator.setTileCacheEnabled(enable);
+ }
+diff --git a/src/mln/renderer/renderer_impl.cpp b/src/mln/renderer/renderer_impl.cpp
+index 837f67095ccf7eaee4af884181781091c18e770d..ebc4d4d28d1fd473e30748e8df6e7c93df3afd9f 100644
+--- a/src/mln/renderer/renderer_impl.cpp
++++ b/src/mln/renderer/renderer_impl.cpp
+@@ -92,6 +92,7 @@ void Renderer::Impl::setObserver(RendererObserver* observer_) {
+ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<UpdateParameters>& updateParameters) {
+     MLN_TRACE_FUNC();
+     auto& context = backend.getContext();
++    context.setAsyncShaderCompilation(asyncShaderCompilation);
+     context.setObserver(this);
+ 
+     assert(updateParameters);
+@@ -506,7 +507,9 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
+ 
+     observer->onDidFinishRenderingFrame(
+         renderTreeParameters.loaded ? RendererObserver::RenderMode::Full : RendererObserver::RenderMode::Partial,
+-        renderTreeParameters.needsRepaint,
++        // Keep repainting while shader libraries are still compiling off-thread so the
++        // drawables that skipped this frame get drawn as soon as their program is ready.
++        renderTreeParameters.needsRepaint || context.hasPendingShaderCompiles(),
+         renderTreeParameters.placementChanged,
+         std::move(stats));
+ 
+diff --git a/src/mln/renderer/renderer_impl.hpp b/src/mln/renderer/renderer_impl.hpp
+index a7f3501943e84d3151c7b19204d87c7db12bda7e..c345db74c903896d82b8ff8380bf51cbc13bc741 100644
+--- a/src/mln/renderer/renderer_impl.hpp
++++ b/src/mln/renderer/renderer_impl.hpp
+@@ -48,6 +48,8 @@ private:
+     RenderOrchestrator orchestrator;
+ 
+     gfx::RendererBackend& backend;
++    /// Applied to the context every frame; see gfx::Context::setAsyncShaderCompilation.
++    bool asyncShaderCompilation = false;
+ 
+     RendererObserver* observer;
+ 
+diff --git a/src/mln/shaders/mtl/shader_program.cpp b/src/mln/shaders/mtl/shader_program.cpp
+index 7e5ca3554a18c513f8e82438b84b7f142209d759..10ee0fa9ae450a66594b5d34d8b9d3d54418e8e0 100644
+--- a/src/mln/shaders/mtl/shader_program.cpp
++++ b/src/mln/shaders/mtl/shader_program.cpp
+@@ -78,12 +78,42 @@ ShaderProgram::ShaderProgram(std::string name, RendererBackend& backend_, MTLFun
+       vertexFunction(std::move(vert)),
+       fragmentFunction(std::move(frag)) {}
+ 
++ShaderProgram::ShaderProgram(std::string name, RendererBackend& backend_, std::shared_ptr<PendingFunctions> pending_)
++    : ShaderProgramBase(),
++      shaderName(std::move(name)),
++      backend(backend_),
++      pending(std::move(pending_)) {}
++
+ ShaderProgram::~ShaderProgram() noexcept = default;
+ 
++bool ShaderProgram::isReady() const {
++    if (!pending) {
++        return true;
++    }
++    if (!pending->ready.load(std::memory_order_acquire)) {
++        return false;
++    }
++    if (pending->failed.load()) {
++        // Keep reporting "not ready": nothing can be drawn with a program that did not compile
++        // (the failure was logged by the compile completion handler).
++        return false;
++    }
++    {
++        std::scoped_lock lock(pending->mutex);
++        vertexFunction = pending->vertex;
++        fragmentFunction = pending->fragment;
++    }
++    pending.reset();
++    return true;
++}
++
+ MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Renderable& renderable,
+                                                                 const MTLVertexDescriptorPtr& vertexDescriptor,
+                                                                 const gfx::ColorMode& colorMode,
+                                                                 const std::optional<std::size_t> reuseHash) const {
++    if (!isReady()) {
++        return nullptr; // still compiling asynchronously
++    }
+     if (reuseHash.has_value()) {
+         // we'd like to reuse a previous value
+         if (auto it = renderPipelineStateCache.find(reuseHash.value()); it != renderPipelineStateCache.end())
