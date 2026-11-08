@@ -14,6 +14,7 @@
 #include <Metal/MTLRenderPass.hpp>
 #include <Metal/MTLRenderPipeline.hpp>
 
+#include <chrono>
 #include <cstring>
 #include <utility>
 #include <algorithm>
@@ -82,7 +83,9 @@ ShaderProgram::ShaderProgram(std::string name, RendererBackend& backend_, std::s
     : ShaderProgramBase(),
       shaderName(std::move(name)),
       backend(backend_),
-      pending(std::move(pending_)) {}
+      pending(std::move(pending_)),
+      asyncPipelineStates(true),
+      pendingCounter(pending ? pending->counter : nullptr) {}
 
 ShaderProgram::~ShaderProgram() noexcept = default;
 
@@ -107,21 +110,9 @@ bool ShaderProgram::isReady() const {
     return true;
 }
 
-MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Renderable& renderable,
-                                                                const MTLVertexDescriptorPtr& vertexDescriptor,
-                                                                const gfx::ColorMode& colorMode,
-                                                                const std::optional<std::size_t> reuseHash) const {
-    if (!isReady()) {
-        return nullptr; // still compiling asynchronously
-    }
-    if (reuseHash.has_value()) {
-        // we'd like to reuse a previous value
-        if (auto it = renderPipelineStateCache.find(reuseHash.value()); it != renderPipelineStateCache.end())
-            return it->second;
-    }
-
-    auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
-
+MTLRenderPipelineDescriptorPtr ShaderProgram::makePipelineDescriptor(const gfx::Renderable& renderable,
+                                                                     const MTLVertexDescriptorPtr& vertexDescriptor,
+                                                                     const gfx::ColorMode& colorMode) const {
     const auto& renderableResource = renderable.getResource<RenderableResource>();
 
     auto colorFormat = MTL::PixelFormat::PixelFormatBGRA8Unorm;
@@ -189,6 +180,87 @@ MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Rende
     if (stencilFormat) {
         desc->setStencilAttachmentPixelFormat(*stencilFormat);
     }
+
+    return desc;
+}
+
+bool ShaderProgram::isPipelineStatePending(std::size_t reuseHash) const {
+    return pendingPipelineStates.find(reuseHash) != pendingPipelineStates.end();
+}
+
+MTLRenderPipelineStatePtr ShaderProgram::getRenderPipelineState(const gfx::Renderable& renderable,
+                                                                const MTLVertexDescriptorPtr& vertexDescriptor,
+                                                                const gfx::ColorMode& colorMode,
+                                                                const std::optional<std::size_t> reuseHash) const {
+    if (!isReady()) {
+        return nullptr; // still compiling asynchronously
+    }
+    if (reuseHash.has_value()) {
+        // we'd like to reuse a previous value
+        if (auto it = renderPipelineStateCache.find(reuseHash.value()); it != renderPipelineStateCache.end())
+            return it->second;
+    }
+
+    auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+
+    // Asynchronous path, for programs compiled asynchronously: building a pipeline state is where
+    // Metal compiles the program for this GPU, and on a cold shader cache that blocks the render
+    // thread (the main thread on iOS) for longer than compiling the library did. Build it on
+    // Metal's queue and return null until it lands; the drawable skips its draw meanwhile
+    // (isPipelineStatePending) and the renderer keeps requesting frames while it is counted.
+    if (asyncPipelineStates && reuseHash.has_value()) {
+        if (auto it = pendingPipelineStates.find(*reuseHash); it != pendingPipelineStates.end()) {
+            const auto slot = it->second;
+            if (!slot->done.load(std::memory_order_acquire)) {
+                return nullptr;
+            }
+            pendingPipelineStates.erase(it);
+            MTLRenderPipelineStatePtr built;
+            {
+                std::scoped_lock lock(slot->mutex);
+                built = slot->state;
+            }
+            if (built) {
+                renderPipelineStateCache[*reuseHash] = built;
+                return built;
+            }
+            // The asynchronous build failed (logged by its handler): try once synchronously below,
+            // which logs and asserts as before.
+        } else {
+            auto slot = std::make_shared<PendingPipeline>();
+            pendingPipelineStates.emplace(*reuseHash, slot);
+            const auto desc = makePipelineDescriptor(renderable, vertexDescriptor, colorMode);
+            if (pendingCounter) {
+                pendingCounter->fetch_add(1);
+            }
+            const auto buildStart = std::chrono::steady_clock::now();
+            backend.getDevice()->newRenderPipelineState(
+                desc.get(),
+                [slot, counter = pendingCounter, name = shaderName, buildStart](MTL::RenderPipelineState* state,
+                                                                                NS::Error* buildError) {
+                    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - buildStart)
+                                        .count();
+                    if (state && !buildError) {
+                        std::scoped_lock lock(slot->mutex);
+                        slot->state = NS::RetainPtr(state);
+                        Log::Info(Event::Shader,
+                                  name + " pipeline state built asynchronously in " + std::to_string(ms) + " ms");
+                    } else {
+                        const auto errPtr = buildError ? buildError->localizedDescription()->utf8String() : nullptr;
+                        const auto errStr = (errPtr && errPtr[0]) ? ": "s + errPtr : std::string();
+                        Log::Error(Event::Shader, name + " async newRenderPipelineState failed" + errStr);
+                    }
+                    slot->done.store(true, std::memory_order_release);
+                    if (counter) {
+                        counter->fetch_sub(1);
+                    }
+                });
+            return nullptr;
+        }
+    }
+
+    const auto desc = makePipelineDescriptor(renderable, vertexDescriptor, colorMode);
 
     NS::Error* error = nullptr;
     const auto& device = backend.getDevice();

@@ -161,6 +161,7 @@ UniqueShaderProgram Context::createProgram(shaders::BuiltIn shaderID,
     // not raised from the completion handler.
     if (asyncShaderCompilation && shaderID != shaders::BuiltIn::ClippingMaskProgram) {
         auto pending = std::make_shared<ShaderProgram::PendingFunctions>();
+        pending->counter = pendingShaderCompiles;
         auto shader = std::make_unique<ShaderProgram>(name, backend, pending);
         pendingShaderCompiles->fetch_add(1);
         device->newLibrary(

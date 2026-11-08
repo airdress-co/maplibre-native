@@ -233,8 +233,14 @@ void Drawable::draw(PaintParameters& parameters) const {
             // renderer keeps requesting frames while any compile is pending.
             return;
         }
+        const auto pipelineHash = mln::util::hash(getColorMode().hash(), impl->vertexDescHash);
         impl->pipelineState = shaderMTL.getRenderPipelineState(
-            renderable, impl->vertexDesc, getColorMode(), mln::util::hash(getColorMode().hash(), impl->vertexDescHash));
+            renderable, impl->vertexDesc, getColorMode(), pipelineHash);
+        if (!impl->pipelineState && shaderMTL.isPipelineStatePending(pipelineHash)) {
+            // Metal is building the pipeline state off the render thread; skip this drawable for
+            // the frame, as for a program still compiling.
+            return;
+        }
     }
     if (impl->pipelineState) {
         renderPass.setRenderPipelineState(impl->pipelineState);

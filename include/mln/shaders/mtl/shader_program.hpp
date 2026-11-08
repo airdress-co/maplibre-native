@@ -57,6 +57,17 @@ public:
         MTLFunctionPtr fragment;
         std::atomic<bool> ready{false};
         std::atomic<bool> failed{false};
+        /// The context's count of work in flight off the render thread; the program's pipeline
+        /// states are counted in it too, so the renderer keeps requesting frames until they land.
+        std::shared_ptr<std::atomic<int>> counter;
+    };
+
+    /// A render pipeline state Metal is building off the render thread, filled in by the
+    /// completion handler and adopted on the render thread once `done` is set.
+    struct PendingPipeline {
+        std::mutex mutex;
+        MTLRenderPipelineStatePtr state;
+        std::atomic<bool> done{false};
     };
 
     ShaderProgram(std::string name,
@@ -75,6 +86,10 @@ public:
     /// frames until it turns true.
     bool isReady() const;
 
+    /// Whether the pipeline state for `reuseHash` is being built off the render thread
+    /// (`getRenderPipelineState` returned null for it). A drawable skips its draw meanwhile.
+    bool isPipelineStatePending(std::size_t reuseHash) const;
+
     MTLRenderPipelineStatePtr getRenderPipelineState(const gfx::Renderable&,
                                                      const MTLVertexDescriptorPtr&,
                                                      const gfx::ColorMode& colorMode,
@@ -91,11 +106,21 @@ public:
     void initTexture(const shaders::TextureInfo&);
 
 protected:
+    MTLRenderPipelineDescriptorPtr makePipelineDescriptor(const gfx::Renderable&,
+                                                          const MTLVertexDescriptorPtr&,
+                                                          const gfx::ColorMode&) const;
+
     std::string shaderName;
     RendererBackend& backend;
     mutable MTLFunctionPtr vertexFunction;
     mutable MTLFunctionPtr fragmentFunction;
     mutable std::shared_ptr<PendingFunctions> pending;
+    /// Set for a program compiled asynchronously: its pipeline states are built asynchronously
+    /// too, because building one is where Metal compiles the program for the GPU, which on a
+    /// cold shader cache blocks for longer than compiling the library did.
+    bool asyncPipelineStates = false;
+    std::shared_ptr<std::atomic<int>> pendingCounter;
+    mutable mln::unordered_map<std::size_t, std::shared_ptr<PendingPipeline>> pendingPipelineStates;
     VertexAttributeArray vertexAttributes;
     VertexAttributeArray instanceAttributes;
     std::array<std::optional<size_t>, shaders::maxTextureCountPerShader> textureBindings;
