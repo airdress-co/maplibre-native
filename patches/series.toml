@@ -149,3 +149,11 @@ summary = "Metal render pipeline states build off the render thread for async-co
 offer = "owner-declined"
 drop_when = "a base release builds pipeline states asynchronously (with #4563 or a successor)"
 tests = ["//platform/ios/test:ios_test MLNAsyncShaderCompilationTests"]
+
+[[patch]]
+file = "ours/0003-metal-async-clip-masks.patch"
+group = "ours"
+summary = "The Metal tile clipping mask compiles asynchronously too; its tile layer groups wait a frame instead of the main thread"
+offer = "owner-declined"
+drop_when = "a base release compiles the clipping mask off the render thread"
+tests = ["//platform/ios/test:ios_test MLNAsyncShaderCompilationTests"]

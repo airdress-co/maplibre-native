@@ -1,0 +1,147 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Robert Jefe Lindstaedt <robert.lindstaedt@gmail.com>
+Date: Mon, 9 Nov 2026 22:29:18 +0100
+Subject: [PATCH] metal: compile the tile clipping mask asynchronously too; its
+ tile layer groups wait a frame
+
+With asynchronous shader compilation on, every program but the clipping
+mask compiled off the render thread: it is drawn by
+Context::renderTileClippingMasks rather than as a drawable, so it had no
+way to wait and was compiled synchronously at the first frame. On a cold
+shader cache that still held an iOS app's main thread for about 400 ms on
+some first launches.
+
+The clipping mask program now compiles asynchronously like the rest, and
+its render pipeline state builds asynchronously with it. While either is
+not ready, renderTileClippingMasks and renderGlobeTileClippingMasks
+return false, as the OpenGL path's mask rendering already does on
+failure. PaintParameters then forgets the mask set, so the next frame
+draws it, and the tile layer group skips its drawables for the frame:
+drawn without their masks they would be clipped wrongly. Those drawables'
+own programs are compiling in the same window, so they would mostly wait
+anyway. The renderer keeps requesting frames while the work is pending,
+which it counts with the rest.
+---
+ include/mln/shaders/mtl/shader_program.hpp |  3 +++
+ src/mln/mtl/context.cpp                    | 24 +++++++++++++++++-----
+ src/mln/mtl/tile_layer_group.cpp           |  7 ++++++-
+ src/mln/renderer/paint_parameters.cpp      | 11 ++++++----
+ 4 files changed, 35 insertions(+), 10 deletions(-)
+
+diff --git a/include/mln/shaders/mtl/shader_program.hpp b/include/mln/shaders/mtl/shader_program.hpp
+index 15efa68604b2e146aa0bb8b2a15d928904f9497d..d9f1f292c994bb00212f103bad4a1e2719178f7d 100644
+--- a/include/mln/shaders/mtl/shader_program.hpp
++++ b/include/mln/shaders/mtl/shader_program.hpp
+@@ -90,6 +90,9 @@ public:
+     /// (`getRenderPipelineState` returned null for it). A drawable skips its draw meanwhile.
+     bool isPipelineStatePending(std::size_t reuseHash) const;
+ 
++    /// Whether any pipeline state of this program is being built off the render thread.
++    bool hasPendingPipelineStates() const { return !pendingPipelineStates.empty(); }
++
+     MTLRenderPipelineStatePtr getRenderPipelineState(const gfx::Renderable&,
+                                                      const MTLVertexDescriptorPtr&,
+                                                      const gfx::ColorMode& colorMode,
+diff --git a/src/mln/mtl/context.cpp b/src/mln/mtl/context.cpp
+index c10c36e894c46765b18cbc505b0a393bfd9101f0..a2a67244cba935cb27f869823a7f30af81b8f64e 100644
+--- a/src/mln/mtl/context.cpp
++++ b/src/mln/mtl/context.cpp
+@@ -155,11 +155,12 @@ UniqueShaderProgram Context::createProgram(shaders::BuiltIn shaderID,
+     const auto compileStart = std::chrono::steady_clock::now();
+ 
+     // Asynchronous path: hand back a program whose functions arrive later, and let Metal compile
+-    // the library on its own queue. The clipping mask program stays synchronous - it is drawn
+-    // through Context::renderTileClippingMasks rather than a drawable, so it has no "skip this
+-    // frame" path. Observer post-compile / failure callbacks belong to the render thread and are
+-    // not raised from the completion handler.
+-    if (asyncShaderCompilation && shaderID != shaders::BuiltIn::ClippingMaskProgram) {
++    // the library on its own queue. The clipping mask program is drawn through
++    // renderTileClippingMasks rather than a drawable; while it is not ready, that returns false
++    // and the tile layer group skips its drawables for the frame, as a drawable whose own program
++    // is not ready would. Observer post-compile / failure callbacks belong to the render thread
++    // and are not raised from the completion handler.
++    if (asyncShaderCompilation) {
+         auto pending = std::make_shared<ShaderProgram::PendingFunctions>();
+         pending->counter = pendingShaderCompiles;
+         auto shader = std::make_unique<ShaderProgram>(name, backend, pending);
+@@ -456,6 +457,10 @@ bool Context::renderTileClippingMasks(gfx::RenderPass& renderPass,
+     }
+ 
+     const auto& mtlShader = static_cast<const mtl::ShaderProgram&>(*clipMaskShader);
++    if (!mtlShader.isReady()) {
++        // Still compiling off the render thread: nothing is drawn with these masks this frame.
++        return false;
++    }
+     auto& mtlRenderPass = static_cast<mtl::RenderPass&>(renderPass);
+     const auto& encoder = mtlRenderPass.getMetalEncoder();
+ 
+@@ -478,6 +483,9 @@ bool Context::renderTileClippingMasks(gfx::RenderPass& renderPass,
+ 
+     if (!clipMaskPipelineState) {
+         clipMaskPipelineState = makeClipMaskPipelineState(mtlShader, renderable);
++        if (!clipMaskPipelineState && mtlShader.hasPendingPipelineStates()) {
++            return false; // being built off the render thread
++        }
+     }
+     if (clipMaskPipelineState) {
+         mtlRenderPass.setRenderPipelineState(clipMaskPipelineState);
+@@ -551,6 +559,9 @@ bool Context::renderGlobeTileClippingMasks(gfx::RenderPass& renderPass,
+     }
+ 
+     const auto& mtlShader = static_cast<const mtl::ShaderProgram&>(*globeClipMaskShader);
++    if (!mtlShader.isReady()) {
++        return false; // still compiling off the render thread
++    }
+     auto& mtlRenderPass = static_cast<mtl::RenderPass&>(renderPass);
+     const auto& encoder = mtlRenderPass.getMetalEncoder();
+ 
+@@ -559,6 +570,9 @@ bool Context::renderGlobeTileClippingMasks(gfx::RenderPass& renderPass,
+ 
+     if (!globeClipMaskPipelineState) {
+         globeClipMaskPipelineState = makeClipMaskPipelineState(mtlShader, renderable);
++        if (!globeClipMaskPipelineState && mtlShader.hasPendingPipelineStates()) {
++            return false; // being built off the render thread
++        }
+     }
+     if (globeClipMaskPipelineState) {
+         mtlRenderPass.setRenderPipelineState(globeClipMaskPipelineState);
+diff --git a/src/mln/mtl/tile_layer_group.cpp b/src/mln/mtl/tile_layer_group.cpp
+index a599ef03e2ff75cdd9b90cbedcb89b46aef3573b..2c13dba862d7fa96d7ab805237b94992d8902b63 100644
+--- a/src/mln/mtl/tile_layer_group.cpp
++++ b/src/mln/mtl/tile_layer_group.cpp
+@@ -123,7 +123,12 @@ void TileLayerGroup::render(RenderOrchestrator&, PaintParameters& parameters) {
+             encoder->setStencilReferenceValue(stencilMode3d.ref);
+         }
+     } else if (hasStencilTiles) {
+-        parameters.renderTileClippingMasks(stencilTiles);
++        if (!parameters.renderTileClippingMasks(stencilTiles)) {
++            // No masks this frame (their program is compiling off the render thread): drawing
++            // against them would clip wrongly, so this group waits a frame like a drawable whose
++            // program is not ready. The renderer keeps requesting frames while work is pending.
++            return;
++        }
+     }
+ 
+     bool bindUBOs = false;
+diff --git a/src/mln/renderer/paint_parameters.cpp b/src/mln/renderer/paint_parameters.cpp
+index a233585e142d121b873d787e848569aa89e72201..88bc5ffda50ffb65de8a79eae919259f7c557584 100644
+--- a/src/mln/renderer/paint_parameters.cpp
++++ b/src/mln/renderer/paint_parameters.cpp
+@@ -320,10 +320,13 @@ bool PaintParameters::renderTileClippingMasks(const RenderTiles& renderTiles) {
+ #endif
+ 
+         auto& mtlContext = static_cast<mtl::Context&>(context);
+-        if (globe) {
+-            mtlContext.renderGlobeTileClippingMasks(*renderPass, staticData, globeMasks);
+-        } else {
+-            mtlContext.renderTileClippingMasks(*renderPass, staticData, tileUBOs);
++        const bool drawn = globe ? mtlContext.renderGlobeTileClippingMasks(*renderPass, staticData, globeMasks)
++                                 : mtlContext.renderTileClippingMasks(*renderPass, staticData, tileUBOs);
++        if (!drawn) {
++            // The mask program is not ready (compiling off the render thread): forget the set so
++            // the next frame draws it, and tell the caller nothing may use it this frame.
++            tileClippingMaskIDs.clear();
++            return false;
+         }
+ 
+         mtlContext.renderingStats().stencilUpdates++;
