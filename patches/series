@@ -21,3 +21,4 @@ globe/12-glfw-toggle.patch
 globe/13-fixes-and-tests.patch
 ours/0001-metal-async-shader-libraries.patch
 ours/0002-metal-async-pipeline-states.patch
+ours/0003-metal-async-clip-masks.patch
