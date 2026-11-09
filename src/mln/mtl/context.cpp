@@ -155,11 +155,12 @@ UniqueShaderProgram Context::createProgram(shaders::BuiltIn shaderID,
     const auto compileStart = std::chrono::steady_clock::now();
 
     // Asynchronous path: hand back a program whose functions arrive later, and let Metal compile
-    // the library on its own queue. The clipping mask program stays synchronous - it is drawn
-    // through Context::renderTileClippingMasks rather than a drawable, so it has no "skip this
-    // frame" path. Observer post-compile / failure callbacks belong to the render thread and are
-    // not raised from the completion handler.
-    if (asyncShaderCompilation && shaderID != shaders::BuiltIn::ClippingMaskProgram) {
+    // the library on its own queue. The clipping mask program is drawn through
+    // renderTileClippingMasks rather than a drawable; while it is not ready, that returns false
+    // and the tile layer group skips its drawables for the frame, as a drawable whose own program
+    // is not ready would. Observer post-compile / failure callbacks belong to the render thread
+    // and are not raised from the completion handler.
+    if (asyncShaderCompilation) {
         auto pending = std::make_shared<ShaderProgram::PendingFunctions>();
         pending->counter = pendingShaderCompiles;
         auto shader = std::make_unique<ShaderProgram>(name, backend, pending);
@@ -456,6 +457,10 @@ bool Context::renderTileClippingMasks(gfx::RenderPass& renderPass,
     }
 
     const auto& mtlShader = static_cast<const mtl::ShaderProgram&>(*clipMaskShader);
+    if (!mtlShader.isReady()) {
+        // Still compiling off the render thread: nothing is drawn with these masks this frame.
+        return false;
+    }
     auto& mtlRenderPass = static_cast<mtl::RenderPass&>(renderPass);
     const auto& encoder = mtlRenderPass.getMetalEncoder();
 
@@ -478,6 +483,9 @@ bool Context::renderTileClippingMasks(gfx::RenderPass& renderPass,
 
     if (!clipMaskPipelineState) {
         clipMaskPipelineState = makeClipMaskPipelineState(mtlShader, renderable);
+        if (!clipMaskPipelineState && mtlShader.hasPendingPipelineStates()) {
+            return false; // being built off the render thread
+        }
     }
     if (clipMaskPipelineState) {
         mtlRenderPass.setRenderPipelineState(clipMaskPipelineState);
@@ -551,6 +559,9 @@ bool Context::renderGlobeTileClippingMasks(gfx::RenderPass& renderPass,
     }
 
     const auto& mtlShader = static_cast<const mtl::ShaderProgram&>(*globeClipMaskShader);
+    if (!mtlShader.isReady()) {
+        return false; // still compiling off the render thread
+    }
     auto& mtlRenderPass = static_cast<mtl::RenderPass&>(renderPass);
     const auto& encoder = mtlRenderPass.getMetalEncoder();
 
@@ -559,6 +570,9 @@ bool Context::renderGlobeTileClippingMasks(gfx::RenderPass& renderPass,
 
     if (!globeClipMaskPipelineState) {
         globeClipMaskPipelineState = makeClipMaskPipelineState(mtlShader, renderable);
+        if (!globeClipMaskPipelineState && mtlShader.hasPendingPipelineStates()) {
+            return false; // being built off the render thread
+        }
     }
     if (globeClipMaskPipelineState) {
         mtlRenderPass.setRenderPipelineState(globeClipMaskPipelineState);

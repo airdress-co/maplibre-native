@@ -90,6 +90,9 @@ public:
     /// (`getRenderPipelineState` returned null for it). A drawable skips its draw meanwhile.
     bool isPipelineStatePending(std::size_t reuseHash) const;
 
+    /// Whether any pipeline state of this program is being built off the render thread.
+    bool hasPendingPipelineStates() const { return !pendingPipelineStates.empty(); }
+
     MTLRenderPipelineStatePtr getRenderPipelineState(const gfx::Renderable&,
                                                      const MTLVertexDescriptorPtr&,
                                                      const gfx::ColorMode& colorMode,

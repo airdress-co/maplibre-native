@@ -123,7 +123,12 @@ void TileLayerGroup::render(RenderOrchestrator&, PaintParameters& parameters) {
             encoder->setStencilReferenceValue(stencilMode3d.ref);
         }
     } else if (hasStencilTiles) {
-        parameters.renderTileClippingMasks(stencilTiles);
+        if (!parameters.renderTileClippingMasks(stencilTiles)) {
+            // No masks this frame (their program is compiling off the render thread): drawing
+            // against them would clip wrongly, so this group waits a frame like a drawable whose
+            // program is not ready. The renderer keeps requesting frames while work is pending.
+            return;
+        }
     }
 
     bool bindUBOs = false;

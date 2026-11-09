@@ -320,10 +320,13 @@ bool PaintParameters::renderTileClippingMasks(const RenderTiles& renderTiles) {
 #endif
 
         auto& mtlContext = static_cast<mtl::Context&>(context);
-        if (globe) {
-            mtlContext.renderGlobeTileClippingMasks(*renderPass, staticData, globeMasks);
-        } else {
-            mtlContext.renderTileClippingMasks(*renderPass, staticData, tileUBOs);
+        const bool drawn = globe ? mtlContext.renderGlobeTileClippingMasks(*renderPass, staticData, globeMasks)
+                                 : mtlContext.renderTileClippingMasks(*renderPass, staticData, tileUBOs);
+        if (!drawn) {
+            // The mask program is not ready (compiling off the render thread): forget the set so
+            // the next frame draws it, and tell the caller nothing may use it this frame.
+            tileClippingMaskIDs.clear();
+            return false;
         }
 
         mtlContext.renderingStats().stencilUpdates++;
