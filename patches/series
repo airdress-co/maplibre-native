@@ -2,7 +2,7 @@
 # recorded head, then the patches in order: infra, globe, ours.
 # Maintained by airdress/scripts/refresh.sh and import-globe.sh; see
 # airdress/README.md.
-base ios-v7.0.0
+base ios-v7.1.0
 globe-pr maplibre/maplibre-native#4533 bec8a12440d0c8a3bd320f151e1b16de39285705
 infra/0001-fork-ci.patch
 infra/0002-packaging.patch
